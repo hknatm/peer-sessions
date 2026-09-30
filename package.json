@@ -1,0 +1,23 @@
+{
+  "name": "peer-sessions",
+  "version": "0.1.0",
+  "description": "Opt-in durable peer messaging between independent Pi sessions on macOS and Linux",
+  "type": "module",
+  "license": "MIT",
+  "author": "hknatm",
+  "repository": { "type": "git", "url": "git+https://github.com/hknatm/peer-sessions.git" },
+  "homepage": "https://github.com/hknatm/peer-sessions#readme",
+  "bugs": { "url": "https://github.com/hknatm/peer-sessions/issues" },
+  "engines": { "node": ">=24" },
+  "keywords": ["pi-package", "peer-to-peer", "pi-extension"],
+  "bin": { "pi-peer": "src/cli.mjs" },
+  "pi": { "extensions": ["extensions/peer.ts"] },
+  "files": ["extensions/*.ts", "src/*.mjs", "README.md", "SECURITY.md", "CHANGELOG.md", "RELEASE.md", "LICENSE"],
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "*", "typebox": "*" },
+  "peerDependenciesMeta": { "@earendil-works/pi-coding-agent": { "optional": true }, "typebox": { "optional": true } },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check": "node scripts/release-check.mjs",
+    "prepack": "node scripts/release-check.mjs"
+  }
+}

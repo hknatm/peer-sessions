@@ -1,0 +1,26 @@
+name: Verify package
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install tested Pi host (not into package dependencies)
+        run: npm install --global --ignore-scripts @earendil-works/pi-coding-agent@0.99.1
+      - name: Test temporary services, adapter and packed installation
+        run: npm test
+      - name: Check release content for credential artifacts
+        run: npm run check
+      - name: Verify npm pack
+        run: npm pack --pack-destination "$RUNNER_TEMP"
