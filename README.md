@@ -27,11 +27,13 @@ Restart/reload Pi, then:
 
 First use asks permission to initialize private state and install/start a user-level background service. Installation alone does nothing: no services, model calls, LAN listener, or exposed sessions. Enabled sessions can communicate with other enabled sessions on their own machine. Remote machines remain blocked until explicitly allowed.
 
-`/peer` opens **Sessions, Inbox, Outbox, Permissions, Pair machines, Service, Disable this session**. Select readable names; stable addresses remain available when needed. Escape cancels a menu; empty lists explain the next step. Noninteractive/RPC users can use explicit commands instead of opening menus:
+`/peer` shows whether this session is enabled and whether the service is reachable. It opens **Sessions, Inbox, Outbox, Permissions, Pair machines, Status, Settings & help, Service, Disable this session**. Completed actions return to the main menu; Escape closes it. Session names are compact, with stable addresses in Details. Queue screens support previous/next pages and show only actions applicable to the message state. Accepting a message in the menu requires confirmation because it starts a model turn; uncertain messages warn about possible prior side effects. Empty lists explain the next step. Noninteractive/RPC users can use explicit commands instead of opening menus:
 
 ```text
 /peer list
 /peer status
+/peer settings
+/peer help
 /peer inbox
 /peer outbox
 /peer send MACHINE/SESSION message
@@ -39,15 +41,17 @@ First use asks permission to initialize private state and install/start a user-l
 /peer disable
 ```
 
-Compatibility `/peers` remains available. Session disable, service uninstall, and machine revocation are different operations; none deletes queues.
+Subcommands have slash-command argument completion. `/peer help` works before service setup; `/peer settings` opens connection/authentication examples, pairing steps, permissions, recovery and command guidance without changing settings. `/peer status` is a readable summary, with machine-wide queue counts labelled separately from this session’s permissions. Unknown subcommands show a usage error. Compatibility `/peers` remains available. Session disable, service uninstall, and machine revocation are different operations; none deletes queues.
 
 ## Pair another machine
 
-Install the package and `/peer enable` on both hosts. On host A, `/peer pair` → **Create invitation**. Enter A's explicit LAN HTTPS address, e.g. `https://192.168.x.x:7443` using your real LAN IP. Confirm opening that listener, and copy the private invitation from the UI editor. Invitations expire after five minutes; never paste them into agent chat or tool arguments.
+Install the package and `/peer enable` on both hosts. On host A, `/peer pair` → **Create invitation**. Enter A's actual LAN IP, e.g. `192.168.1.20` or `192.168.1.20:7443`; bare IPs default to HTTPS port 7443. An explicit `https://192.168.1.20:7443` also works. The address is **this computer’s peer listener, not its model/provider API URL**. Invalid entries show guidance and let you retry; Escape cancels. Confirm opening that listener, and copy the private invitation from the UI editor. If listener activation fails, the previous listener configuration is restored and recovery is attempted; a failed recovery requires checking Service before retrying. Invitations expire after five minutes; never paste them into agent chat or tool arguments.
 
 On host B, `/peer pair` → **Join with invitation**, enter B's LAN address, and paste A's invitation privately. Verify A's displayed SHA256 fingerprint with A through a trusted channel. B waits for A's approval.
 
-On A, `/peer pair` → **Approve waiting request**, verify B's fingerprint independently, then approve. Both services save pinned certificates and a freshly generated per-pair secret. Machines have been paired, but each session still needs **Permissions → allow machine**. Auto-start remains off.
+On A, `/peer pair` → **Approve waiting request**, verify B's fingerprint independently, then select **Approve verified machine**. **Back** or Escape leaves the request pending; **Reject request** explicitly rejects it. Both services save pinned certificates and a freshly generated per-pair secret. Machines have been paired, but each session still needs **Permissions → allow machine**. Auto-start remains off.
+
+**No auth token needs to be entered.** Certificates and pair secrets are managed automatically. HTTP, hostnames, wildcard listener addresses, reverse-proxy paths, query tokens and URL credentials are unsupported. Your existing Pi model-provider configuration is unchanged. Same-computer sessions need no URL or pairing. **Settings & help → Connection & authentication** and **Pair machines → Connection guidance** explain this before setup.
 
 TLS 1.3 protects traffic; reciprocal certificate pinning and pair-secret auth protect normal messages. The `/pair` endpoint is reachable only while an invitation/request is open. It accepts a high-entropy invitation and requires local approval; no short PIN/custom encryption. Keep OS firewalls restricted to your LAN peers. No mDNS, NAT traversal, or relay routing. Static IPs/DHCP reservations simplify pairing. A partial pairing (one host stops after approval) may require re-pair/revocation; no silent trust transfer occurs.
 

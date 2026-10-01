@@ -5,6 +5,7 @@ import { Type } from 'typebox';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { requestLocal } from '../src/client.mjs';
 import { ensureService,pairMachines,serviceManagement } from './manage.ts';
+import { HELP,settingsHelp,sessionStatus,menuText } from './guidance.ts';
 
 export default function(pi: ExtensionAPI) {
  const dir = process.env.PI_PEERS_DIR ?? path.join(os.homedir(), '.pi/peer-sessions');
@@ -46,9 +47,9 @@ export default function(pi: ExtensionAPI) {
    const rows=await call('inbox');
    if(gen!==generation || stopped)return;
    const pending=rows.filter((r:any)=>['pending','uncertain'].includes(r.state));
-   ctx.ui.setStatus('peers',`peers: on · inbox ${pending.length}`);
+   ctx.ui.setStatus('peers',`peers: on · inbox ${pending.length}${pending.length===5?'+':''}`);
    for(const row of pending) {
-    if(!noticed.has(row.id)){noticed.add(row.id);show(`Peer message ${row.id} (${row.state}). /peers inbox; /peers accept ${row.id}`);}
+    if(!noticed.has(row.id)){noticed.add(row.id);show(`Peer message ${row.id} (${row.state}). Open /peer → Inbox to review and accept. Acceptance starts a model turn.`);}
    }
    const candidate=pending.find((r:any)=>r.state==='pending'&&r.autoEligible===true&&r.message.expires>Date.now());
    if(candidate && !activeMessage && ctx.isIdle() && !ctx.hasPendingMessages()) await accept(candidate.id,false);
@@ -81,10 +82,16 @@ export default function(pi: ExtensionAPI) {
   await legacyHandler(args,fresh);
  }
  async function menu(fresh:any){
+  while(await menuPage(fresh)!==false){ /* Return to the parent menu after each completed action. */ }
+ }
+ async function menuPage(fresh:any):Promise<false|void>{
   ctx=fresh;
-  const config=await call('config').catch(()=>null);
-  const options=config?.enabled?['Sessions','Inbox','Outbox','Permissions','Pair machines','Service','Disable this session']:['Enable this session','Pair machines','Service'];
-  const choice=await fresh.ui.select('Peer sessions',options);if(!choice)return;
+  let config:any,available=true;
+  try{config=await call('config');}catch(error:any){if(!['ENOENT','ECONNREFUSED'].includes(error.code))throw error;available=false;}
+  const options=config?.enabled?['Sessions','Inbox','Outbox','Permissions','Pair machines','Status','Settings & help','Service','Disable this session']:['Enable this session','Pair machines','Status','Settings & help','Service'];
+  const choice=await fresh.ui.select(`Peer sessions — ${available?(config?.enabled?'enabled':'disabled'):'service unavailable'} (Escape closes)`,options);if(!choice)return false;
+  if(choice==='Settings & help')return settingsHelp(fresh);
+  if(choice==='Status')return commandHandler('status',fresh);
   if(choice==='Enable this session')return commandHandler('enable',fresh);
   if(choice==='Disable this session')return commandHandler('disable',fresh);
   if(choice==='Pair machines')return pairMachines(dir,fresh);
@@ -94,39 +101,50 @@ export default function(pi: ExtensionAPI) {
    const health=await call('health');const peers=[{machine:'local',label:'This machine'},...health.paired];
    if(scope==='Revoke paired machine'){
     if(!health.paired.length){show('No paired machines.');return;}
-    const labels=health.paired.map((p:any)=>`${p.label} (${p.machine})`),selected=await fresh.ui.select('Revoke machine on this host',labels);
+    const labels=health.paired.map((p:any)=>`${menuText(p.label)} (${p.machine})`),selected=await fresh.ui.select('Revoke machine on this host',labels);
     if(selected&&await fresh.ui.confirm('Revoke machine access?', 'Pending mail is retained but cannot trigger work; other sessions on this host also lose this machine connection.'))show(await call('revoke-peer',{machine:health.paired[labels.indexOf(selected)].machine}));return;
    }
-   const labels=peers.map((p:any)=>`${config.peers.includes(p.machine)?'Allowed':'Blocked'} · ${p.label} (${p.machine.slice(0,8)})`);
+   const labels=peers.map((p:any)=>`${config.peers.includes(p.machine)?'Allowed':'Blocked'} · ${menuText(p.label)} (${p.machine.slice(0,8)})`);
    const selected=await fresh.ui.select('Machine permission for this session',labels);if(selected){const p=peers[labels.indexOf(selected)];await legacyHandler(`${config.peers.includes(p.machine)?'deny':'allow'} ${p.machine}`,fresh);}return;
   }
   if(choice==='Sessions'){
-   const rows=await call('list');if(!rows.length){show('No permitted sessions. Enable another session, or allow a paired machine in Permissions.');return;}
-   const labels=rows.map((r:any)=>`${r.label??r.address} · ${r.machineLabel??'This machine'} · ${r.state} · ${r.address}`);
+   const rows=(await call('list')).filter((r:any)=>r.address!==`${machine}/${session}`);if(!rows.length){show('No other permitted sessions. Same computer: /peer enable in another session. Another computer: pair machines, then allow each machine in Permissions on BOTH sessions.');return;}
+   const labels=rows.map((r:any,i:number)=>`${i+1}. ${menuText(r.label??r.address)} · ${menuText(r.machineLabel??'This machine',24)} · ${r.state}`);
    const selected=await fresh.ui.select('Sessions — select to send or change receive mode',labels);if(!selected)return;
    const target=rows[labels.indexOf(selected)];if(target.state==='unreachable'){show('Machine unreachable; existing queues remain safe.');return;}
-   const action=await fresh.ui.select(target.label??target.address,['Send message','Allow auto-start from this session','Disable auto-start from this session']);
-   if(action==='Send message'){const body=await fresh.ui.editor('Message to peer','');if(body?.trim())show(await call('send',{to:target.address,body,requestId:crypto.randomUUID()}));}
-   else if(action)await legacyHandler(`auto ${target.address} ${action.startsWith('Allow')?'on':'off'}`,fresh);return;
+   const automatic=config.auto.includes(target.address);
+   const action=await fresh.ui.select(`${menuText(target.label??target.address)} — ${target.state}; incoming auto-start ${automatic?'on':'off'}`,['Send message',automatic?'Disable auto-start from this session':'Allow auto-start from this session','Details','Back']);
+   if(action==='Send message'){const body=await fresh.ui.editor(`Message to ${menuText(target.label??target.address)} — recipient controls processing`,'');if(body?.trim()){const row=await call('send',{to:target.address,body,requestId:crypto.randomUUID()});show(`Message queued (${row.id}). Receipt does not mean the recipient has processed it.`);}}
+   else if(action==='Details')show(`Address: ${target.address}\nState: ${target.state}\nIncoming auto-start: ${automatic?'on':'off'}\nClosed sessions store mail until manually accepted. Auto-start authorizes this sender to start work here; the recipient controls your outgoing messages.`);
+   else if(action?.includes('auto-start'))await legacyHandler(`auto ${target.address} ${automatic?'off':'on'}`,fresh);return;
   }
   if(choice==='Inbox'||choice==='Outbox'){
    let page=0;while(true){
     const incoming=choice==='Inbox';const rows=await call(incoming?'inbox':'queue',incoming?{page}:{page,direction:'out'});
-    const labels=rows.map((r:any)=>`${r.state} · ${r.message.body.replace(/\s+/g,' ').slice(0,70)} · ${r.id.slice(0,8)}`);
-    const controls=incoming?['Next page','Back']:['Pause pending sends','Resume paused sends','Next page','Back'];
+    if(!rows.length)show(page===0?(incoming?'Inbox empty. Messages arrive here after another permitted session sends them.':'Outbox empty. Open Sessions → select a session → Send message.'):'No messages on this page. Choose Previous page.');
+    const labels=rows.map((r:any,i:number)=>`${i+1}. ${r.state} · ${menuText(r.message.body,48)} · ${r.id.slice(0,8)}`);
+    const controls=[...(!incoming?['Pause pending sends','Resume paused sends']:[]),...(page>0?['Previous page']:[]),...(rows.length===5?['Next page']:[]),'Back'];
     const selected=await fresh.ui.select(`${choice} — page ${page+1}`,labels.concat(controls));if(!selected||selected==='Back')return;
-    if(selected==='Next page'){if(rows.length===5)page++;else show('No further messages.');continue;}
-    if(selected.startsWith('Pause')||selected.startsWith('Resume')){show(await call('queue-control',{operation:selected.startsWith('Pause')?'pause':'resume'}));continue;}
-    const row=rows[labels.indexOf(selected)];show(row.message.body);
-    const action=await fresh.ui.select(`Message ${row.id} · ${row.state}`,incoming?['Accept and start turn','Dismiss','Back']:['Cancel pending send','Back']);
-    if(action==='Accept and start turn'){await accept(row.id,true);return;}
-    if(action==='Dismiss'||action==='Cancel pending send'){if(await fresh.ui.confirm(action,'This does not undo work or recall a delivered message. Stored record is retained.'))show(await call('queue-control',{operation:incoming?'dismiss':'cancel',id:row.id}));}
+    if(selected==='Next page'){page++;continue;}
+    if(selected==='Previous page'){page--;continue;}
+    if(selected.startsWith('Pause')||selected.startsWith('Resume')){const operation=selected.startsWith('Pause')?'pause':'resume';await call('queue-control',{operation});show(operation==='pause'?'Pending sends paused. Already in-flight sends may still arrive.':'Paused sends resumed; delivery retries subject to permission and expiry.');continue;}
+    const row=rows[labels.indexOf(selected)];
+    show(`From: ${row.message.fromMachine}/${row.message.fromSession}\nTo: ${row.message.toMachine}/${row.message.toSession}\nState: ${row.state} · expires ${new Date(row.message.expires).toISOString()}\n${row.error?`Delivery: ${row.error}\n`:''}\n${row.message.body}`);
+    const actions=incoming?[...(['pending','uncertain'].includes(row.state)&&row.message.expires>Date.now()?['Accept and start turn']:[]),...(['pending','uncertain','expired'].includes(row.state)?['Dismiss']:[]),'Back']:[...(['queued','paused'].includes(row.state)?['Cancel pending send']:[]),'Back'];
+    const action=await fresh.ui.select(`Message ${row.id} · ${row.state}`,actions);
+    if(action==='Accept and start turn'){
+     if(!await fresh.ui.confirm('Start a peer turn?',row.state==='uncertain'?'Previous work may already have performed side effects. Inspect this session before retrying. Acceptance starts model calls with your current model and tools.':'Acceptance starts model calls and agent work with this session’s current model and tools.'))continue;
+     await accept(row.id,true);return false;
+    }
+    if(action==='Dismiss'||action==='Cancel pending send'){if(await fresh.ui.confirm(action,'This does not undo work or recall a delivered message. Stored record is retained.')){await call('queue-control',{operation:incoming?'dismiss':'cancel',id:row.id});show(incoming?'Message dismissed; stored record retained.':'Unsent message cancelled; stored record retained.');}}
    }
   }
  }
  async function legacyHandler(args:string,fresh:any){
   ctx=fresh;let [command,...rest]=args.trim().split(/\s+/);command=command==='enable'?'on':command==='disable'?'off':command;
   try{
+   if(command==='help'){show(Object.entries(HELP).map(([title,body])=>`${title}\n${body}`).join('\n\n'));return;}
+   if(command==='settings'){await settingsHelp(fresh);return;}
    if(command==='pair'){await pairMachines(dir,fresh);return;}
    if(command==='service'){await serviceManagement(dir,fresh);return;}
    if(!fresh.sessionManager.getSessionFile())throw new Error('Peer participation requires a persistent session');
@@ -149,12 +167,16 @@ export default function(pi: ExtensionAPI) {
    else if(command==='delivery')show(await call('delivery',{id:rest[0]}));
    else if(command==='inbox')show(await call('inbox',{page:Number(rest[0]??0)}));
    else if(command==='outbox')show(await call('queue',{page:Number(rest[0]??0),direction:'out'}));
-   else if(command==='status')show({address:`${machine||'service'}/${session}`,attached:!!token,...await call('health')});
-   else show(await call('list'));
-  }catch(e:any){fresh.ui.notify(e.message,'error');}
+   else if(command==='status')show(sessionStatus(await call('health'),await call('config'),!!token,session));
+   else if(command==='list'||!command)show(await call('list'));
+   else throw new Error(`Unknown /peer command: ${command}. Use /peer help or open /peer.`);
+  }catch(e:any){fresh.ui.notify(['ENOENT','ECONNREFUSED'].includes(e.code)?'Peer service unavailable. Use /peer → Service → Update/reinstall service, or /peer enable for confirmed setup. Queues are preserved.':e.message,'error');}
  }
- pi.registerCommand('peer',{description:'Peer messaging: enable, disable, pair, status, inbox, outbox; no arguments opens management menu.',handler:async(args,fresh)=>{try{await commandHandler(args,fresh);}catch(e:any){fresh.ui.notify(e.message,'error');}}});
- pi.registerCommand('peers',{description:'Compatibility alias for /peer',handler:async(args,fresh)=>{try{await commandHandler(args,fresh);}catch(e:any){fresh.ui.notify(e.message,'error');}}});
+ const commands:Record<string,string>={enable:'Enable this session; confirmed service setup if needed',disable:'Disable this session; preserve mail',list:'List permitted sessions',inbox:'Stored incoming messages (pages start at 0)',outbox:'Outgoing delivery records (pages start at 0)',status:'Connection, session permission and queue summary',settings:'Connection examples, automatic auth and guidance',help:'Setup, permissions, recovery and commands',pair:'Guided secure machine pairing',service:'Status, update/reinstall, restart or uninstall',send:'Send to MACHINE/SESSION',accept:'Start a turn for INBOX_ID',delivery:'Check transport receipt for MESSAGE_ID',allow:'Allow paired MACHINE for this session',deny:'Block MACHINE for this session',auto:'Allow automatic turns from MACHINE/SESSION on|off'};
+ const getArgumentCompletions=(prefix:string)=>Object.entries(commands).filter(([name])=>name.startsWith(prefix)).map(([value,description])=>({value,label:value,description}));
+ const handler=async(args:string,fresh:any)=>{try{await commandHandler(args,fresh);}catch(e:any){fresh.ui.notify(e.message,'error');}};
+ pi.registerCommand('peer',{description:'Independent peer sessions — menu, settings/help, secure pairing and queues.',getArgumentCompletions,handler});
+ pi.registerCommand('peers',{description:'Compatibility alias for /peer',getArgumentCompletions,handler});
  function result(value:unknown){return {content:[{type:'text' as const,text:JSON.stringify(value,null,2)}],details:undefined};}
  pi.registerTool({name:'peer_list',description:'List permitted independent peer sessions. No spawning or transcript access.',parameters:Type.Object({}),async execute(){return result(await call('list'));}});
  pi.registerTool({name:'peer_inbox',description:'Read stored peer messages in pages of five, including IDs for replies. Does not accept or start work.',parameters:Type.Object({page:Type.Optional(Type.Integer({minimum:0}))}),async execute(_id,args){return result(await call('inbox',args));}});

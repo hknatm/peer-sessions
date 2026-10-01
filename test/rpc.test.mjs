@@ -15,7 +15,7 @@ test('fresh real Pi RPC session enables/lists/disables peers without model calls
  try{
   const isolated=path.join(dir,'agent');fs.mkdirSync(isolated,{mode:0o700});
   const settings={};fs.writeFileSync(path.join(isolated,'settings.json'),JSON.stringify(settings));
-  const {cli}=await loadHostRuntime();const messages=['/peers on','/peers allow local','/peer status','/peer list','/peer disable'];
+  const {cli}=await loadHostRuntime();const messages=['/peer help','/peers on','/peers allow local','/peer status','/peer list','/peer disable'];
   const child=spawn(process.execPath,[cli,'-e',new URL('../extensions/peer.ts',import.meta.url).pathname,'--mode','rpc','--offline','--no-approve','--session-dir',path.join(dir,'sessions')],{cwd:dir,env:{...process.env,PI_PEERS_DIR:state,PI_CODING_AGENT_DIR:isolated},stdio:['pipe','pipe','pipe']});
   const records=[],pending=new Map();let stderr='';child.stderr.on('data',c=>stderr+=c);
   const lines=createInterface({input:child.stdout});lines.on('line',line=>{const r=JSON.parse(line);records.push(r);if(r.type==='response')pending.get(r.id)?.(r);});
@@ -29,6 +29,8 @@ test('fresh real Pi RPC session enables/lists/disables peers without model calls
   assert.equal(records.filter(r=>r.type==='response'&&r.command==='prompt'&&r.success).length,messages.length,JSON.stringify(records.filter(r=>r.type==='response')));
   const errors=records.filter(r=>r.type==='extension_ui_request'&&r.method==='notify'&&r.notifyType==='error');assert.deepEqual(errors,[]);
   assert.ok(records.some(r=>r.method==='notify'&&String(r.message).includes('Session permissions updated')));
+  assert.ok(records.some(r=>r.method==='notify'&&String(r.message).includes('Connection & authentication')));
+  assert.ok(records.some(r=>r.method==='notify'&&String(r.message).includes('enabled · attached')));
   const rows=service.store.db.prepare('SELECT * FROM sessions').all();assert.equal(rows.length,1);assert.equal(rows[0].enabled,0);assert.deepEqual(JSON.parse(rows[0].peers),['local']);
  }finally{await service.close();fs.rmSync(dir,{recursive:true,force:true});}
 });
