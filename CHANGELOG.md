@@ -1,6 +1,15 @@
 # Changelog
 
-## 0.2.0 — Unreleased (protocol/storage v2)
+## 0.2.1 — Main-branch update
+
+- Durable 40-message rolling-hour allowance per session across incoming/outgoing traffic and all peers. Deduplicated retries and acceptance are free; receiving limits preserve sender queues for retry.
+- Default related-chain depth/message/wake ceilings raised to 40; separate 24-hour deadline retained. This is not a token budget.
+- Serialize acceptance, recheck readiness after claim, safely release unpresented claims, defer auto-draining past settlement and retain eligibility on message-local claim refusals. Exhausted conversation wakes no longer starve other eligible mail.
+- Show hourly usage, directional receive auto/review and busy/backlog rules in the CLI picker/status/help.
+- Compact peer context (five presence rows), send receipts and inbox tool results; explicit brief replies only.
+- Require updated hourly-limit service capability; no new protocol/storage migration. Real Pi busy-queue flow tested with a local zero-cost provider; physical LAN/provider deployment remains unverified.
+
+## 0.2.0 — Main-branch update (protocol/storage v2)
 
 - Project-scoped opt-in: canonical checkout identities, explicit non-Git roots, automatic bounded same-project agent presence without wake.
 - Reciprocal session-scoped cross-project discovery/messaging grants; paired remote machines require separate project approval. Full roots are not advertised.

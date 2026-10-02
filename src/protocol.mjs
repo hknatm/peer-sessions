@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 export const VERSION = 2;
 export const CONFIG_VERSION = 1;
-export const DEFAULTS = Object.freeze({ leaseMs: 60000, pollMs: 15000, maxDepth: 4, maxMessages: 16, maxWakes: 4, maxPayload: 32768, maxRows: 10000, mailboxRows: 1000, ttlMs: 86400000, ratePerMinute: 60 });
+export const DEFAULTS = Object.freeze({ leaseMs: 60000, pollMs: 15000, maxDepth: 40, maxMessages: 40, maxWakes: 40, messagesPerHour: 40, maxPayload: 32768, maxRows: 10000, mailboxRows: 1000, ttlMs: 86400000, ratePerMinute: 60 });
 export function ensure(value, message, status = 400) { if (!value) throw Object.assign(new Error(message), { status }); }
 export function text(value, max = 256) { ensure(typeof value === 'string' && value.length > 0 && value.length <= max && !/[\x00-\x1f\x7f]/.test(value), 'Invalid text field'); return value; }
 export function id(value) { ensure(typeof value === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(value), 'Invalid identifier'); return value; }

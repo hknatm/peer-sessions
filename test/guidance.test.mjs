@@ -48,6 +48,8 @@ test('command discovery, unknown command error, readable status and no self-targ
   await f.command('status');assert.ok(f.notices.some(([text])=>text.includes('enabled · attached')&&text.includes('LAN listener: off')));
   await f.command('', ['Sessions']);assert.ok(f.notices.some(([text])=>text.includes('No other permitted sessions')));
   assert.ok(f.screens[0].options.includes('Status'));
+  assert.ok(f.notices.some(([text])=>text.includes('0/40 in rolling hour')));
+  assert.ok(f.screens[0].title.includes('0/40/h'));
  });
 });
 
@@ -70,6 +72,17 @@ test('queue menus: empty guidance, reversible paging, state-appropriate actions 
   f.confirm(true);await f.command('', ['Inbox',label,'Accept and start turn']);
   assert.equal(f.presented,1);assert.equal(store.get(ids[1]).state,'presented');
   assert.ok(!f.screens.at(-1).title.startsWith('Peer sessions —'));
+ });
+});
+
+test('session picker explains directional auto-start and shows usage/queue mode',async()=>{
+ await menuFixture(async f=>{
+  await f.command('enable');const s=f.service.store,own=s.session('s');s.configure('sender',{enabled:true,project:own.project,peers:['local']});s.attach('sender','sender');
+  const label='1. sender · '+own.project.label.slice(0,16)+' · ready · receive review';
+  await f.command('', ['Sessions',label,'Details']);assert.ok(f.notices.some(([text])=>text.includes('busy messages wait')&&text.includes('Receive review = manual acceptance')));
+  f.confirm(true);await f.command('auto host/sender on');
+  const autoLabel=label.replace('receive review','receive auto');await f.command('', ['Sessions',autoLabel,'Back']);assert.ok(f.screens.some(s=>s.title.includes('incoming auto-start on')));
+  await f.command('settings',['Message allowance & costs','Back']);assert.ok(f.notices.some(([text])=>text.includes('not a token/cost cap')));
  });
 });
 

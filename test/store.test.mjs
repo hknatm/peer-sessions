@@ -56,7 +56,7 @@ test('crash recovery: presented processing is uncertain and never auto replayed'
 });
 test('wake budget, permission revoked, expiry, capacity and unsupported version',()=>{
  const f=fixture({maxWakes:1,mailboxRows:1});try{
- const m=remote();f.s.receive(m,'remote');assert.throws(()=>f.s.receive(remote(),'remote'),/Mailbox full/);f.s.claim('b',f.b,m.id);f.s.detach('b',f.b);const token=f.s.attach('b','new').token;assert.throws(()=>f.s.claim('b',token,m.id,true),/wake budget/);
+ const m=remote();f.s.receive(m,'remote');assert.throws(()=>f.s.receive(remote(),'remote'),/Mailbox full/);f.s.claim('b',f.b,m.id);f.s.detach('b',f.b);const token=f.s.attach('b','new').token;assert.throws(()=>f.s.claim('b',token,m.id,true),/wake budget/);assert.equal(f.s.get(m.id).eligible,null);
  f.s.configure('b',{enabled:true,project:{id:'p',label:'Project'},allowedProjects:['remote/rp'],peers:['local']});assert.throws(()=>f.s.claim('b',token,m.id,true),/revoked/);
  assert.throws(()=>f.s.receive(remote({expires:Date.now()-1}),'remote'),/expired/);
  }finally{f.close();}

@@ -53,7 +53,7 @@ export async function startService(dir, { config = readConfig(dir), interval = 1
      store.inFlight.add(r.id);
      const ack = m.toMachine === config.machine ? store.receive(m, config.machine) : await peerRequest(m.toMachine, 'receive', { message: m });
      ensure(ack.received === true, 'Invalid receipt', 409); store.delivery(r.id, 'received');
-    } catch (e) { store.delivery(r.id, [400,403,409,410].includes(e.status) ? 'rejected' : 'queued', e.status ? `Remote rejection ${e.status}` : 'Peer unreachable or TLS/auth failure'); }
+    } catch (e) { store.delivery(r.id, [400,403,409,410].includes(e.status) ? 'rejected' : 'queued', e.status===429?'Recipient rate limited; queued for retry':e.status ? `Remote rejection ${e.status}` : 'Peer unreachable or TLS/auth failure'); }
     finally {store.inFlight.delete(r.id);}
    }
   } finally { flushing = false; }
@@ -66,6 +66,7 @@ export async function startService(dir, { config = readConfig(dir), interval = 1
     const next = readConfig(dir); ensure(next.version === CONFIG_VERSION && next.machine === config.machine, 'Identity/config mismatch');
     const updated=loadPeers(next);
     for(const old of Object.keys(peers).filter(machine=>!Object.hasOwn(updated,machine))) {
+     for(const [mid,prior]of store.reservations)if(store.get(mid).message.fromMachine===old)prior.eligible=null;
      store.db.prepare("UPDATE messages SET eligible=NULL WHERE direction='in' AND json_extract(envelope,'$.fromMachine')=?").run(old);
      store.db.prepare("UPDATE messages SET state='rejected',error='Peer revoked' WHERE direction='out' AND state='queued' AND json_extract(envelope,'$.toMachine')=?").run(old);
     }
@@ -78,7 +79,8 @@ export async function startService(dir, { config = readConfig(dir), interval = 1
    case 'queue': store.authorized(session,token);return store.queue(session,body.direction??'out',body.page??0).map(r=>publicRow(r));
    case 'queue-control': store.authorized(session,token);return store.queueControl(session,body.operation,body.id);
    case 'revoke-peer': {const next=readConfig(dir);id(body.machine);delete next.peers[body.machine];const {saveConfig}=await import('./config.mjs');saveConfig(dir,next);return local({action:'reload-trust'});}
-   case 'health': return {capabilities:['project-scope-v2'],runtime:path.join(path.dirname(fileURLToPath(import.meta.url)),'cli.mjs'), version: VERSION, machine: config.machine, label:config.label??config.machine, paired: Object.entries(peers).map(([machine,p])=>({machine,label:p.label??machine})), lan: !!config.listen, limits: store.limits, queue:store.queueSummary() };
+   case 'health': return {capabilities:['project-scope-v2','session-hourly-v1'],runtime:path.join(path.dirname(fileURLToPath(import.meta.url)),'cli.mjs'), version: VERSION, machine: config.machine, label:config.label??config.machine, paired: Object.entries(peers).map(([machine,p])=>({machine,label:p.label??machine})), lan: !!config.listen, limits: store.limits, queue:store.queueSummary() };
+   case 'usage': store.authorized(session,token);return store.usage(session);
    case 'config': return store.session(session) ?? null;
    case 'configure': ensure(body.settings.peers.every(p => p === 'local' || Object.hasOwn(peers,p)), 'Allow only paired machines'); return store.configure(session, body.settings);
    case 'attach': return store.attach(session, body.owner, body.info);
@@ -86,6 +88,7 @@ export async function startService(dir, { config = readConfig(dir), interval = 1
    case 'detach': store.detach(session, token); return { detached: true };
    case 'inbox': return store.inbox(session, token, body.page ?? 0).map(r=>publicRow(r,token));
    case 'claim': { const r = store.get(body.id); ensure(r && (r.message.fromMachine === config.machine || Object.hasOwn(peers,r.message.fromMachine)), 'Sender machine revoked', 403); return publicRow(store.claim(session, token, body.id, !!body.manual)); }
+   case 'release': store.release(session,token,body.id);return {released:true};
    case 'settled': store.settled(session, token, body.id, body.completed === true); return { settled: true };
    case 'presented': store.presented(session, token, body.id); return { presented: true };
    case 'projects': {

@@ -18,6 +18,8 @@ Project discovery/messaging is restricted to enabled sessions in the same canoni
 
 Auto-start is opt-in per sender and may cause model costs and tool side effects. Peer messages are untrusted input. No transcript/file/model credential API is remotely exposed, but a model with tools could independently disclose data; limit recipient tools/permissions appropriately.
 
+The default 40-message rolling-hour allowance is per persistent session across incoming/outgoing traffic, not a token or global machine budget. New session IDs have separate allowances. One accepted message can start many model/tool calls; chain budgets and concise-message guidance do not guarantee low token spend. Counters depend on the host clock and retained records; use operator-approved model/tool cost controls for strict spending limits.
+
 Revocation blocks subsequent messages/claims but cannot undo already accepted turns or side effects. Cancellation cannot recall a durably received message.
 
 ## Reporting
