@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { once } from 'node:events';
 import { loadHostRuntime } from './host-runtime.mjs';
@@ -11,6 +11,7 @@ import { startService } from '../src/service.mjs';
 
 test('fresh real Pi RPC session enables/lists/disables peers without model calls',async()=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'ps-rpc-'));const state=path.join(dir,'state');fs.mkdirSync(state,{mode:0o700});
+ execFileSync('git',['init',dir],{stdio:'ignore'});
  const service=await startService(state,{config:{version:1,machine:'host',peers:{},listen:null},interval:60000});
  try{
   const isolated=path.join(dir,'agent');fs.mkdirSync(isolated,{mode:0o700});

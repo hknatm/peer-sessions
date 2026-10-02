@@ -20,26 +20,34 @@ test('real mutual TLS: delivery, offline sender queue, receiver restart, revocat
  try{
   sb=await startService(b,{config:cb,interval:60000});ca.peers.b.url=`https://127.0.0.1:${sb.address.port}`;
   sa=await startService(a,{config:ca,interval:60000});
-  await requestLocal(a,'configure',{session:'s1',settings:{enabled:true,peers:['b']}});await requestLocal(b,'configure',{session:'s2',settings:{enabled:true,peers:['a'],auto:['a/s1']}});
+  await requestLocal(a,'configure',{session:'s1',settings:{enabled:true,project:{id:'pa',label:'A'},allowedProjects:['b/pb'],peers:['b']}});await requestLocal(b,'configure',{session:'s2',settings:{enabled:true,project:{id:'pb',label:'B'},allowedProjects:['a/pa'],peers:['a'],auto:['a/s1']}});
   const token=(await requestLocal(a,'attach',{session:'s1',owner:'test'})).token;
+  await requestLocal(b,'configure',{session:'s2',settings:{enabled:true,project:{id:'pb',label:'B'},allowedProjects:[],peers:['a']}});
+  assert.deepEqual(await requestLocal(a,'list',{session:'s1',token}),[]);
+  await assert.rejects(requestLocal(a,'send',{session:'s1',token,to:'b/s2',body:'blocked',requestId:'blocked'}),/project approval/);
+  await requestLocal(b,'configure',{session:'s2',settings:{enabled:true,project:{id:'pb',label:'B'},allowedProjects:['a/pa'],peers:['a'],auto:['a/s1']}});
   const list=await requestLocal(a,'list',{session:'s1',token});assert.equal(list[0].address,'b/s2');assert.equal(list[0].state,'session-closed');
   const args={session:'s1',token,to:'b/s2',body:'offline backlog',requestId:uid()};await requestLocal(a,'send',args);await sa.flush();assert.equal(sa.store.get(args.requestId).state,'received');
   const bt=(await requestLocal(b,'attach',{session:'s2',owner:'b-owner',info:{model:'private-provider/model'}})).token;
   const inbox=await requestLocal(b,'inbox',{session:'s2',token:bt});assert.equal(inbox[0].autoEligible,false);assert.equal(inbox[0].eligible,undefined);
   const next={...args,body:'new message',requestId:uid()};await requestLocal(a,'send',next);await sa.flush();assert.equal(sb.store.get(next.requestId).eligible,bt);
   const cert=fs.readFileSync(path.join(a,'identity.crt')),key=fs.readFileSync(path.join(a,'identity.key'));
-  assert.equal((await rawRequest(sb.address.port,{version:1,action:'list'},{'x-peer-machine':'a',authorization:`Bearer ${secret}`})).status,403);
-  assert.equal((await rawRequest(sb.address.port,{version:1,action:'list'},{'x-peer-machine':'a',authorization:'Bearer wrong'},cert,key)).status,403);
+  assert.equal((await rawRequest(sb.address.port,{version:2,action:'list'},{'x-peer-machine':'a',authorization:`Bearer ${secret}`})).status,403);
+  assert.equal((await rawRequest(sb.address.port,{version:2,action:'list'},{'x-peer-machine':'a',authorization:'Bearer wrong'},cert,key)).status,403);
   assert.equal((await rawRequest(sb.address.port,{version:99,action:'list'},{'x-peer-machine':'a',authorization:`Bearer ${secret}`},cert,key)).status,409);
-  assert.equal((await rawRequest(sb.address.port,{version:1,action:'configure'},{'x-peer-machine':'a',authorization:`Bearer ${secret}`},cert,key)).status,403);
+  assert.equal((await rawRequest(sb.address.port,{version:2,action:'configure'},{'x-peer-machine':'a',authorization:`Bearer ${secret}`},cert,key)).status,403);
   const port=sb.address.port;await sb.close();sb=null;
   const offline={...args,body:'while host down',requestId:uid()};await requestLocal(a,'send',offline);await sa.flush();assert.equal(sa.store.get(offline.requestId).state,'queued');
   await sa.close();sa=null;
   cb.listen.port=port;sb=await startService(b,{config:cb,interval:60000});sa=await startService(a,{config:ca,interval:60000});sa.store.db.prepare('UPDATE messages SET next=0').run();await sa.flush();assert.equal(sa.store.get(offline.requestId).state,'received');assert.equal(sb.store.get(next.requestId).eligible,null);
+  const certHeaders={'x-peer-machine':'a',authorization:`Bearer ${secret}`};
+  const spoof={...sa.store.get(offline.requestId).message,id:'spoof',fromProject:'wrong'};
+  assert.equal((await rawRequest(sb.address.port,{version:2,action:'receive',message:spoof},certHeaders,cert,key)).status,403);
+  assert.equal((await rawRequest(sb.address.port,{version:1,action:'list'},certHeaders,cert,key)).status,409);
   const resumed=(await requestLocal(b,'attach',{session:'s2',owner:'resumed'})).token;assert.throws(()=>sb.store.claim('s2',resumed,next.requestId),/Manual acceptance/);
   const revoked={...cb,peers:{}};fs.writeFileSync(path.join(b,'config.json'),JSON.stringify(revoked));await requestLocal(b,'reload-trust');
   await assert.rejects(requestLocal(b,'claim',{session:'s2',token:resumed,id:offline.requestId,manual:true}),/revoked/);
-  assert.equal((await rawRequest(sb.address.port,{version:1,action:'list'},{'x-peer-machine':'a',authorization:`Bearer ${secret}`},cert,key)).status,403);
+  assert.equal((await rawRequest(sb.address.port,{version:2,action:'list'},{'x-peer-machine':'a',authorization:`Bearer ${secret}`},cert,key)).status,403);
  }finally{await sa?.close();await sb?.close();fs.rmSync(root,{recursive:true,force:true});}
 });
 test('private local socket ownership and duplicate service protection',async()=>{

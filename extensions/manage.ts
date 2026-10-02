@@ -42,7 +42,14 @@ export async function changeListener(dir:string,listen:{host:string,port:number}
 }
 
 export async function ensureService(dir:string,ctx:ExtensionContext){
- try{return await requestLocal(dir,'health');}catch(error:any){if(!['ENOENT','ECONNREFUSED'].includes(error.code))throw error;}
+ try{
+  const health=await requestLocal(dir,'health');
+  if(!health.capabilities?.includes('project-scope-v2'))throw new Error('Project-scoped service required. Use /peer → Service → Update/reinstall service, then re-enable this session.');
+  return health;
+ }catch(error:any){if(!['ENOENT','ECONNREFUSED'].includes(error.code)){
+  if(error.status===409)throw new Error('Service protocol changed. Use /peer → Service → Update/reinstall service, then re-enable this session.');
+  throw error;
+ }}
  if(!ctx.hasUI||!await ctx.ui.confirm('Set up peer messaging?', 'Install/start a private user-level service that restarts after failure and login. LAN is off until pairing. This never launches Pi or calls a model.'))throw new Error('Service setup cancelled');
  await installService(dir);return requestLocal(dir,'health');
 }
@@ -58,7 +65,7 @@ export async function pairMachines(dir:string,ctx:ExtensionContext){
   const decision=await ctx.ui.select(`Verify ${request.peer.label} · ${request.peer.url}\nSHA256: ${request.peer.fingerprint}\nCompare through a trusted channel. Session permission is separate.`,['Approve verified machine','Reject request','Back']);
   if(!decision||decision==='Back')return;
   const accepted=decision==='Approve verified machine';
-  await requestLocal(dir,'pair-approve',{request:request.request,accepted});ctx.ui.notify(accepted?'Machine paired. On BOTH hosts: /peer → Permissions → Session machine permissions → allow the other machine. Auto-start stays off.':'Request rejected.','info');return;
+  await requestLocal(dir,'pair-approve',{request:request.request,accepted});ctx.ui.notify(accepted?'Machine paired. On BOTH sessions: allow the machine in Permissions and its project address in Cross-project cooperation (/peer status). Auto-start stays off.':'Request rejected.','info');return;
  }
  ctx.ui.notify('Use THIS computer’s LAN IP, not your model API URL. Example: 192.168.1.20:7443 → HTTPS. Certificates/auth are automatic; no token needed. No /path or query parameters.','info');
  let endpoint:URL;
@@ -83,7 +90,7 @@ export async function pairMachines(dir:string,ctx:ExtensionContext){
   let paired;
   try{paired=await join(dir,code,endpoint.origin,{signal:controller.signal,confirm:async(peer:any)=>ctx.ui.confirm('Verify inviting machine',`${peer.label}\n${peer.url}\nSHA256: ${peer.fingerprint}\nCompare this fingerprint through a trusted channel.`),onWaiting:()=>ctx.ui.notify('Waiting for approval on the other machine (up to 5 minutes).','info')});}
   finally{process.removeListener('SIGINT',cancel);}
-  await requestLocal(dir,'reload-trust');ctx.ui.notify(`Paired with ${paired.label}. On BOTH hosts: /peer → Permissions → Session machine permissions → allow the other machine. Auto-start stays off.`,'info');
+  await requestLocal(dir,'reload-trust');ctx.ui.notify(`Paired with ${paired.label}. On BOTH sessions: allow the machine in Permissions and its project address in Cross-project cooperation (/peer status). Auto-start stays off.`,'info');
  }
 }
 export async function serviceManagement(dir:string,ctx:ExtensionContext){

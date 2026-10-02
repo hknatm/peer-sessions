@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { ensure, VERSION, fingerprint } from './protocol.mjs';
+import { ensure, CONFIG_VERSION, fingerprint } from './protocol.mjs';
 
 export function privateDir(dir) {
  fs.mkdirSync(dir,{recursive:true,mode:0o700});
@@ -17,11 +17,11 @@ export function saveConfig(dir,config) {
 }
 export function initialize(dir) {
  ensure(Number(process.versions.node.split('.')[0])>=24,'Peer service requires Node.js 24+');privateDir(dir);
- if(fs.existsSync(path.join(dir,'config.json'))){const c=readConfig(dir);ensure(c.version===VERSION,'Unsupported state version');return c;}
+ if(fs.existsSync(path.join(dir,'config.json'))){const c=readConfig(dir);ensure(c.version===CONFIG_VERSION,'Unsupported state version');return c;}
  ensure(!fs.existsSync(path.join(dir,'identity.key')),'Partial identity found; inspect instead of overwriting');
  const machine=crypto.randomUUID();
  execFileSync('openssl',['req','-x509','-newkey','ec','-pkeyopt','ec_paramgen_curve:P-256','-nodes','-days','3650','-subj',`/CN=${machine}`,'-keyout',path.join(dir,'identity.key'),'-out',path.join(dir,'identity.crt')],{stdio:'ignore'});
- fs.chmodSync(path.join(dir,'identity.key'),0o600);const config={version:VERSION,machine,label:'This machine',peers:{},listen:null};saveConfig(dir,config);return config;
+ fs.chmodSync(path.join(dir,'identity.key'),0o600);const config={version:CONFIG_VERSION,machine,label:'This machine',peers:{},listen:null};saveConfig(dir,config);return config;
 }
 export function identity(dir) {const config=readConfig(dir),certificate=fs.readFileSync(path.join(dir,'identity.crt'),'utf8');return {machine:config.machine,label:config.label??config.machine,certificate,fingerprint:fingerprint(new crypto.X509Certificate(certificate).raw)};}
 export function addPeer(dir,peer) {

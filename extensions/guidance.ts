@@ -2,7 +2,8 @@ import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 
 export const HELP: Record<string,string> = {
  'Connection & authentication': [
-  'Same computer: enable both Pi sessions with /peer enable. No URL or pairing needed.',
+  'Same project on this computer: enable both Pi sessions with /peer enable. No URL or pairing needed. Sessions in the same canonical Git checkout discover/message each other automatically; separate worktrees count as separate projects.',
+  'Other projects stay hidden from agents until reciprocal cooperation is approved in /peer → Cross-project cooperation on BOTH sessions. Operator project selection is separate from agent discovery.',
   'Another computer: pair the machines, then allow each machine in the receiving session’s Permissions.',
   'Address example: https://192.168.1.20:7443 — use THIS computer’s actual LAN IP. A bare IP or IP:port also works; default port is 7443.',
   'This is the peer messaging listener, NOT your model/provider API URL. Existing Pi provider settings remain unchanged.',
@@ -14,11 +15,13 @@ export const HELP: Record<string,string> = {
   '2. On A: /peer pair → Create invitation. Enter A’s LAN IP, confirm the secure listener, and copy the private invitation.',
   '3. On B: /peer pair → Join with invitation. Enter B’s LAN IP and paste A’s invitation privately. Verify A’s fingerprint through a trusted channel.',
   '4. On A: /peer pair → Approve waiting request. Verify B’s fingerprint, then approve. Invitations expire after five minutes.',
-  '5. On BOTH sessions: /peer → Permissions → Session machine permissions → allow the other machine. Pairing alone does not grant session access.',
+  '5. On BOTH sessions: allow the paired machine in Permissions AND allow the other project address in Cross-project cooperation. Read your project address from /peer status. Roots on different machines are never automatically treated as the same project.',
   'Auto-start remains off. Stored messages require acceptance unless that exact sending session is authorized for automatic turns.'
  ].join('\n\n'),
  'Permissions & auto-start': [
-  'Enable/disable affects only this Pi session. Disabling preserves messages.',
+  'Enable joins only this session’s confirmed project. Canonical Git root is automatic; non-Git folders require root confirmation. Disabling preserves messages.',
+  'Cross-project approval is session-scoped, reciprocal and revocable. It does not automatically enable other sessions in either project. Full project paths remain local and are not advertised over LAN.',
+  'Same-project presence is refreshed every 15 seconds and on model context preparation; it never triggers a turn. Coordinate file ownership or separate worktrees—presence does not prevent concurrent edits.',
   'Machine permission controls which paired machines this session may discover/message and receive from. Both ends must permit each other.',
   'Auto-start permits one exact sending session to start model calls and agent work while this recipient is running and idle, using its own model and tools. It is not a sandbox.',
   'Closed-session backlog and uncertain/interrupted turns require manual acceptance. An uncertain turn may already have performed work; inspect it before retrying.',
@@ -26,7 +29,8 @@ export const HELP: Record<string,string> = {
  ].join('\n\n'),
  'Recovery & troubleshooting': [
   'Unreachable machine: check both services, actual LAN IPs, port and firewall rules. Use static IPs/DHCP reservations; no hostname discovery, relay or NAT traversal is included.',
-  'No sessions: enable a persistent session on the other computer and allow the paired machine in Permissions on both ends.',
+  'No sessions: enable another session in this project. For other projects/machines, approve both machine and project permissions on BOTH sessions.',
+  'Upgrading from machine-wide v1 requires Service → Update/reinstall service and /peer enable again. Migration creates a private full database backup, disables old participation/auto-start, and pauses pending outgoing mail. Legacy messages are retained for inspection/dismissal, not automatic execution or replay.',
   'Service stopped/missing: /peer → Service → Update/reinstall service (requires confirmation). After a package update, restart Pi and activate the service release there.',
   'User services normally start at login, not necessarily before login after reboot. A removed Node runtime can require service reinstall.',
   'Received means durably stored, not processed. Handled means a turn settled, not proof that the task succeeded. Queued sends retry while permission and deadlines permit.',
@@ -37,6 +41,7 @@ export const HELP: Record<string,string> = {
   '/peer enable | disable — this session only',
   '/peer status — connection, permissions and machine queue summary',
   '/peer settings — connection and setup guidance',
+  '/peer cooperate — operator-only reciprocal cross-project approvals',
   '/peer pair | service — guided machine/service management',
   '/peer list — permitted sessions',
   '/peer inbox [PAGE] | outbox [PAGE] — raw message records; command pages start at 0',
@@ -73,7 +78,11 @@ export function sessionStatus(health:any,config:any,attached:boolean,session:str
   serviceStatus(health),
   `This session: ${config?.enabled?(attached?'enabled · attached':'enabled · disconnected; run /peer enable to retry'):'disabled — use /peer enable'}`,
   `Address: ${health.machine}/${session}`,
+  `Project: ${config?.project?.label??'not confirmed'}`,
+  `Project address: ${config?.project?`${health.machine}/${config.project.id}`:'enable to confirm project'}`,
+  `Cross-project approvals: ${config?.allowedProjects?.length??0}`,
   `Allowed machines: ${config?.peers?.length??0} · auto-start senders: ${config?.auto?.length??0}`,
+  'Machine pairing does not grant project cooperation; both sessions must approve separately.',
   'Pairing and session permission are separate. /peer settings explains setup.'
  ].join('\n');
 }

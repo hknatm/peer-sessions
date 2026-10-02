@@ -11,7 +11,7 @@ import { ensure } from './protocol.mjs';
 const ROOT=path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const LABEL='dev.pi.peer-sessions';
 const OWNER_MARK='PI_PEER_SESSIONS_MANAGED';
-const runtimeFiles=['cli.mjs','client.mjs','config.mjs','protocol.mjs','service.mjs','store.mjs','pairing.mjs','setup.mjs'];
+const runtimeFiles=['cli.mjs','client.mjs','config.mjs','protocol.mjs','service.mjs','store.mjs','pairing.mjs','setup.mjs','project.mjs'];
 const xml=s=>String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
 const unit=s=>'"'+String(s).replaceAll('\\','\\\\').replaceAll('"','\\"').replaceAll('%','%%')+'"';
 export function serviceSpec({platform=process.platform,home=os.homedir(),dir,entry,node=process.execPath,uid=process.getuid?.()}) {

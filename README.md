@@ -25,14 +25,15 @@ Restart/reload Pi, then:
 /peer
 ```
 
-First use asks permission to initialize private state and install/start a user-level background service. Installation alone does nothing: no services, model calls, LAN listener, or exposed sessions. Enabled sessions can communicate with other enabled sessions on their own machine. Remote machines remain blocked until explicitly allowed.
+First use asks permission to initialize private state and install/start a user-level background service. Installation alone does nothing: no services, model calls, LAN listener, or exposed sessions. `/peer enable` joins **this session’s project**, not every session on the machine. Enabled sessions in the same project can discover/message each other; other projects and remote machines remain blocked until explicitly approved.
 
-`/peer` shows whether this session is enabled and whether the service is reachable. It opens **Sessions, Inbox, Outbox, Permissions, Pair machines, Status, Settings & help, Service, Disable this session**. Completed actions return to the main menu; Escape closes it. Session names are compact, with stable addresses in Details. Queue screens support previous/next pages and show only actions applicable to the message state. Accepting a message in the menu requires confirmation because it starts a model turn; uncertain messages warn about possible prior side effects. Empty lists explain the next step. Noninteractive/RPC users can use explicit commands instead of opening menus:
+`/peer` shows whether this session is enabled and whether the service is reachable. It opens **Sessions, Inbox, Outbox, Permissions, Cross-project cooperation, Pair machines, Status, Settings & help, Service, Disable this session**. Completed actions return to the main menu; Escape closes it. Session names are compact, with stable addresses in Details. Queue screens support previous/next pages and show only actions applicable to the message state. Accepting a message in the menu requires confirmation because it starts a model turn; uncertain messages warn about possible prior side effects. Empty lists explain the next step. Noninteractive/RPC users can use explicit commands instead of opening menus:
 
 ```text
 /peer list
 /peer status
 /peer settings
+/peer cooperate
 /peer help
 /peer inbox
 /peer outbox
@@ -43,13 +44,29 @@ First use asks permission to initialize private state and install/start a user-l
 
 Subcommands have slash-command argument completion. `/peer help` works before service setup; `/peer settings` opens connection/authentication examples, pairing steps, permissions, recovery and command guidance without changing settings. `/peer status` is a readable summary, with machine-wide queue counts labelled separately from this session’s permissions. Unknown subcommands show a usage error. Compatibility `/peers` remains available. Session disable, service uninstall, and machine revocation are different operations; none deletes queues.
 
+## Project-scoped cooperation
+
+**Same project** means the canonical Git checkout root. Sessions in its subdirectories or symlink aliases match; distinct Git worktrees/checkouts do not, even with identical remotes. Non-Git sessions ask you to select/confirm a containing project root, saved on the active session branch. Project changes require a new session rather than silently transferring permissions. Session participation is still opt-in; forks do not inherit participation.
+
+Presence of running same-project sessions refreshes every 15 seconds and before model calls. The UI reports membership changes; the agent receives a fresh, bounded presence snapshot in request context, not an ever-growing persisted transcript. Presence does **not** start a turn, launch Pi or automatically delegate. Busy/closed states are lease-based, not instantaneous process detection. Agree on file ownership or separate worktrees before editing shared files.
+
+For another project, use **Cross-project cooperation** or `/peer cooperate`:
+
+1. On A, choose **Allow local project** (operator-only project picker), or **Allow project by address** for another machine. Project addresses are `MACHINE/PROJECT_ID`, available in `/peer status`.
+2. On B, approve A’s project in the same way. Both individual sessions must be enabled.
+3. For remote hosts, also pair the machines and allow the machine in each session’s Permissions.
+
+Approval applies **only to the approving session**, not all sessions in a project. A one-sided grant does not expose another local project or permit a local send. Other sessions must approve separately. Revoke a project through the same menu; queued/received messages remain stored, but revoked access cannot claim them or trigger work. Auto-start stays independently sender-authorized. Project approval is a peer-tool boundary, **not** a filesystem/OS sandbox. Same-user processes can administer the service.
+
+Full roots are not advertised; descriptors contain an opaque root-derived identifier and a display label. Hashes are identifiers, not cryptographic anonymity for guessable paths. Different machines always require explicit project approval—even if paths/names/remotes match. No repository URLs or credentials are used as project identity.
+
 ## Pair another machine
 
 Install the package and `/peer enable` on both hosts. On host A, `/peer pair` → **Create invitation**. Enter A's actual LAN IP, e.g. `192.168.1.20` or `192.168.1.20:7443`; bare IPs default to HTTPS port 7443. An explicit `https://192.168.1.20:7443` also works. The address is **this computer’s peer listener, not its model/provider API URL**. Invalid entries show guidance and let you retry; Escape cancels. Confirm opening that listener, and copy the private invitation from the UI editor. If listener activation fails, the previous listener configuration is restored and recovery is attempted; a failed recovery requires checking Service before retrying. Invitations expire after five minutes; never paste them into agent chat or tool arguments.
 
 On host B, `/peer pair` → **Join with invitation**, enter B's LAN address, and paste A's invitation privately. Verify A's displayed SHA256 fingerprint with A through a trusted channel. B waits for A's approval.
 
-On A, `/peer pair` → **Approve waiting request**, verify B's fingerprint independently, then select **Approve verified machine**. **Back** or Escape leaves the request pending; **Reject request** explicitly rejects it. Both services save pinned certificates and a freshly generated per-pair secret. Machines have been paired, but each session still needs **Permissions → allow machine**. Auto-start remains off.
+On A, `/peer pair` → **Approve waiting request**, verify B's fingerprint independently, then select **Approve verified machine**. **Back** or Escape leaves the request pending; **Reject request** explicitly rejects it. Both services save pinned certificates and a freshly generated per-pair secret. Machines have been paired, but each session still needs **Permissions → allow machine** and **Cross-project cooperation → Allow project by address** on both ends. Auto-start remains off.
 
 **No auth token needs to be entered.** Certificates and pair secrets are managed automatically. HTTP, hostnames, wildcard listener addresses, reverse-proxy paths, query tokens and URL credentials are unsupported. Your existing Pi model-provider configuration is unchanged. Same-computer sessions need no URL or pairing. **Settings & help → Connection & authentication** and **Pair machines → Connection guidance** explain this before setup.
 
@@ -77,7 +94,13 @@ Private state defaults to `~/.pi/peer-sessions/`; `PI_PEERS_DIR` overrides it. N
 
 User services start at **login**; Linux pre-login reboot recovery requires user-service lingering administered separately. macOS requires a login GUI domain. A Node runtime removed by a version-manager update needs `/peer` → **Service → Update/reinstall service** to refresh its path.
 
-After package update, restart Pi and explicitly activate the service release through that menu. Queues/identity remain separate. Activation health failure restores the previous unit when available. This release does not introduce a destructive schema migration; unknown storage/protocol versions are rejected. Package removal does not remove state or an already staged service. First stop/uninstall it via the Service menu (or `pi-peer uninstall-service --yes` if the CLI is available).
+After package update, restart Pi and explicitly activate the service release through that menu. Queues/identity remain separate. Activation health failure restores the previous unit when available. **Protocol/storage v2 is incompatible with v1.** Both hosts need the updated service. An outdated service is rejected; use Service → Update/reinstall service rather than silently falling back to machine-wide access.
+
+### Upgrade from v1
+
+Stop peer participation and back up private state first. On activation, the service creates a mode-600 full SQLite snapshot `mailboxes.sqlite.before-project-v2-*` (including committed WAL contents) before a transactional v1→v2 migration. If backup/migration fails, activation fails instead of granting access. Existing sessions are disabled, their auto-start permissions cleared, and queued outgoing mail paused. Re-enable each session to establish its project and approve cross-project cooperation explicitly. Identity, machine trust, inbox/outbox records and conversation budgets are retained.
+
+**Legacy messages lack project identity:** inspect/dismiss incoming records or cancel old outgoing mail; they cannot be accepted or resumed into v2 delivery. Do not automatically replay their work. Re-send only after reviewing prior side effects. Old service binaries refuse v2 storage; service-unit rollback alone does not downgrade a migrated database. A downgrade requires an operator-managed offline restoration of the full private backup, accounting for messages created since migration. Unknown newer storage/protocol versions are rejected. Package removal does not remove state or an already staged service. First stop/uninstall it via the Service menu (or `pi-peer uninstall-service --yes` if the CLI is available).
 
 Back up by stopping the service, then copy the entire private state directory to an encrypted destination. Do not copy just the main DB with live WAL writes. Do not run a copied identity concurrently on LAN. Current storage caps require explicit operator archival when full; deleting deduplication rows prematurely permits replay.
 

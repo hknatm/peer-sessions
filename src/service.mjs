@@ -5,7 +5,7 @@ import https from 'node:https';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { Store } from './store.mjs';
-import { VERSION, ensure, equalSecret, fingerprint, id } from './protocol.mjs';
+import { VERSION, ensure, equalSecret, fingerprint, id, CONFIG_VERSION, address } from './protocol.mjs';
 import { requestLocal, socketPath, jsonRequest } from './client.mjs';
 import { Pairing } from './pairing.mjs';
 
@@ -21,7 +21,7 @@ function loadPeers(config) {
  }));
 }
 export async function startService(dir, { config = readConfig(dir), interval = 1000 } = {}) {
- ensure(config.version === VERSION, 'Unsupported config protocol');
+ ensure(config.version === CONFIG_VERSION, 'Unsupported config protocol');
  fs.mkdirSync(dir, { recursive: true, mode: 0o700 }); ensure((fs.statSync(dir).mode & 0o077) === 0, 'State directory must be chmod 700');
  const sock = socketPath(dir); ensure(Buffer.byteLength(sock) < 100, 'Unix socket path too long; use a shorter private state path');
  // Exclusive kernel socket ownership; never unlink a potentially live service.
@@ -32,11 +32,12 @@ export async function startService(dir, { config = readConfig(dir), interval = 1
  }
  let peers = loadPeers(config);
  const pairing = new Pairing(dir);
+ const remoteTargets=new Map();
  let store, ownsSocket = false;
  let closing = false, timer, flushing = false;
  const peerRequest = async (machine, action, args = {}) => {
   const p = Object.hasOwn(peers,machine) ? peers[machine] : undefined; ensure(p, 'Machine is not paired', 403);
-  return jsonRequest(https, { hostname: p.url.hostname, port: p.url.port || 443, path: '/v1', method: 'POST', ca: p.cert, rejectUnauthorized: true,
+  return jsonRequest(https, { hostname: p.url.hostname.replace(/^\[|\]$/g,''), port: p.url.port || 443, path: '/v1', method: 'POST', ca: p.cert, rejectUnauthorized: true,
    cert: fs.readFileSync(path.join(dir, 'identity.crt')), key: privateFile(path.join(dir, 'identity.key')),
    checkServerIdentity: (_host, cert) => fingerprint(cert.raw) === p.pin ? undefined : new Error('Peer certificate mismatch'),
    headers: { 'x-peer-machine': config.machine, authorization: `Bearer ${p.secret}` }, agent: false }, { version: VERSION, action, ...args });
@@ -47,7 +48,7 @@ export async function startService(dir, { config = readConfig(dir), interval = 1
    for (const r of store.outbox()) {
     const m = r.message;
     if (m.expires <= Date.now()) { store.delivery(r.id, 'expired'); continue; }
-    if (!store.permitted(r.session, m.toMachine)) { store.delivery(r.id, 'rejected', 'Sender permission revoked'); continue; }
+    if (m.version!==VERSION||!store.projectAllowed(r.session,m.toMachine,m.toProject)) { store.delivery(r.id, 'rejected', 'Sender permission revoked'); continue; }
     try {
      store.inFlight.add(r.id);
      const ack = m.toMachine === config.machine ? store.receive(m, config.machine) : await peerRequest(m.toMachine, 'receive', { message: m });
@@ -62,7 +63,7 @@ export async function startService(dir, { config = readConfig(dir), interval = 1
   const { action, session, token } = body;
   switch (action) {
    case 'reload-trust': {
-    const next = readConfig(dir); ensure(next.version === VERSION && next.machine === config.machine, 'Identity/config mismatch');
+    const next = readConfig(dir); ensure(next.version === CONFIG_VERSION && next.machine === config.machine, 'Identity/config mismatch');
     const updated=loadPeers(next);
     for(const old of Object.keys(peers).filter(machine=>!Object.hasOwn(updated,machine))) {
      store.db.prepare("UPDATE messages SET eligible=NULL WHERE direction='in' AND json_extract(envelope,'$.fromMachine')=?").run(old);
@@ -77,7 +78,7 @@ export async function startService(dir, { config = readConfig(dir), interval = 1
    case 'queue': store.authorized(session,token);return store.queue(session,body.direction??'out',body.page??0).map(r=>publicRow(r));
    case 'queue-control': store.authorized(session,token);return store.queueControl(session,body.operation,body.id);
    case 'revoke-peer': {const next=readConfig(dir);id(body.machine);delete next.peers[body.machine];const {saveConfig}=await import('./config.mjs');saveConfig(dir,next);return local({action:'reload-trust'});}
-   case 'health': return {runtime:path.join(path.dirname(fileURLToPath(import.meta.url)),'cli.mjs'), version: VERSION, machine: config.machine, label:config.label??config.machine, paired: Object.entries(peers).map(([machine,p])=>({machine,label:p.label??machine})), lan: !!config.listen, limits: store.limits, queue:store.queueSummary() };
+   case 'health': return {capabilities:['project-scope-v2'],runtime:path.join(path.dirname(fileURLToPath(import.meta.url)),'cli.mjs'), version: VERSION, machine: config.machine, label:config.label??config.machine, paired: Object.entries(peers).map(([machine,p])=>({machine,label:p.label??machine})), lan: !!config.listen, limits: store.limits, queue:store.queueSummary() };
    case 'config': return store.session(session) ?? null;
    case 'configure': ensure(body.settings.peers.every(p => p === 'local' || Object.hasOwn(peers,p)), 'Allow only paired machines'); return store.configure(session, body.settings);
    case 'attach': return store.attach(session, body.owner, body.info);
@@ -87,13 +88,39 @@ export async function startService(dir, { config = readConfig(dir), interval = 1
    case 'claim': { const r = store.get(body.id); ensure(r && (r.message.fromMachine === config.machine || Object.hasOwn(peers,r.message.fromMachine)), 'Sender machine revoked', 403); return publicRow(store.claim(session, token, body.id, !!body.manual)); }
    case 'settled': store.settled(session, token, body.id, body.completed === true); return { settled: true };
    case 'presented': store.presented(session, token, body.id); return { presented: true };
-   case 'send': { const target = body.to?.split('/')[0]; ensure(target === config.machine || Object.hasOwn(peers,target), 'Machine is not paired'); return publicRow(store.send(session, token, body)); }
+   case 'projects': {
+    store.authorized(session,token);
+    return store.db.prepare('SELECT DISTINCT project,project_sessions.label AS label FROM project_sessions JOIN sessions ON sessions.id=project_sessions.session WHERE enabled=1').all().filter(p=>p.project!==store.session(session).project.id).map(p=>({address:`${config.machine}/${p.project}`,label:p.label}));
+   }
+   case 'presence': {
+    store.authorized(session,token);return store.listing(config.machine,{session,project:store.session(session).project}).filter(r=>r.project.id===store.session(session).project.id&&r.state!=='session-closed');
+   }
+   case 'send': {
+    store.authorized(session,token);const target=address(body.to);
+    ensure(target.machine===config.machine||Object.hasOwn(peers,target.machine),'Machine is not paired');
+    let project;
+    if(target.machine===config.machine)project=store.session(target.session)?.project;
+    else {
+     project=remoteTargets.get(`${session}/${body.to}`);
+     if(!project){const prior=store.db.prepare("SELECT envelope FROM messages WHERE session=? AND direction='out' AND json_extract(envelope,'$.version')=2 AND json_extract(envelope,'$.toMachine')=? AND json_extract(envelope,'$.toSession')=? ORDER BY received DESC LIMIT 1").get(session,target.machine,target.session);if(prior)project={id:JSON.parse(prior.envelope).toProject};}
+     if(!project){
+      const out=await peerRequest(target.machine,'list',{requester:{session,project:store.session(session).project}});
+      project=out.sessions?.find(s=>s.address===body.to)?.project;
+      if(project){if(remoteTargets.size>=1000)remoteTargets.clear();remoteTargets.set(`${session}/${body.to}`,project);}
+     }
+    }
+    ensure(project,'Target session not discoverable; reciprocal project approval required',403);
+    return publicRow(store.send(session,token,{...body,toProject:project.id}));
+   }
    case 'delivery': { store.authorized(session, token); const r = store.get(body.id); ensure(r?.session === session, 'Unknown delivery', 404); return publicRow(r); }
    case 'list': {
     store.authorized(session, token); const allowed = store.session(session).peers;
-    const rows = allowed.includes('local') ? store.listing(config.machine) : [];
+    const rows = allowed.includes('local') ? store.listing(config.machine,{session,project:store.session(session).project}) : [];
     await Promise.all(allowed.filter(p => p !== 'local').map(async machine => {
-     try { const out = await peerRequest(machine, 'list'); ensure(Array.isArray(out.sessions) && out.sessions.length <= 1000, 'Invalid peer listing'); rows.push(...out.sessions.map(s => ({ machineLabel:peers[machine]?.label??machine, address: `${machine}/${id(s.address?.split('/')[1])}`, label: String(s.label).replace(/[\x00-\x1f\x7f]/g, '').slice(0,100), state: ['ready','busy','session-closed'].includes(s.state) ? s.state : 'unknown', receive: 'per-sender permission' }))); }
+     try { const out = await peerRequest(machine, 'list',{requester:{session,project:store.session(session).project}}); ensure(Array.isArray(out.sessions) && out.sessions.length <= 1000, 'Invalid peer listing'); const visible=out.sessions.filter(s=>s.project&&store.projectAllowed(session,machine,s.project.id));
+     if(remoteTargets.size+visible.length>1000)remoteTargets.clear();
+     for(const s of visible)remoteTargets.set(`${session}/${machine}/${id(s.address?.split('/')[1])}`,s.project);
+     rows.push(...visible.map(s => ({ machineLabel:peers[machine]?.label??machine, address: `${machine}/${id(s.address?.split('/')[1])}`, label: String(s.label).replace(/[\x00-\x1f\x7f]/g, '').slice(0,100), project:{id:id(s.project.id),label:String(s.project.label).replace(/[\x00-\x1f\x7f]/g,'').slice(0,100)}, state: ['ready','busy','session-closed'].includes(s.state) ? s.state : 'unknown', receive: 'per-sender permission' }))); }
      catch { rows.push({ address: machine, state: 'unreachable' }); }
     }));
     return rows.slice(0,1000);
@@ -123,7 +150,7 @@ export async function startService(dir, { config = readConfig(dir), interval = 1
    if (remote) { const cert = new crypto.X509Certificate(req.socket.getPeerCertificate().raw); ensure(Date.parse(cert.validTo) > Date.now() && Date.parse(cert.validFrom) <= Date.now(), 'Peer certificate expired or not yet valid', 403); const p = Object.hasOwn(peers, machine) ? peers[machine] : undefined; ensure(p && equalSecret(req.headers.authorization, `Bearer ${p.secret}`) && fingerprint(req.socket.getPeerCertificate().raw) === p.pin, 'Peer revoked', 403); }
    let out;
    if (!remote) out = await local(body);
-   else if (body.action === 'list') out = { sessions: store.listing(machine).slice(0,1000) };
+   else if (body.action === 'list') out = { sessions: store.listing(machine,body.requester).slice(0,1000) };
    else if (body.action === 'receive') out = store.receive(body.message, machine);
    else throw Object.assign(new Error('Remote operation forbidden'), { status: 403 });
    res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(out));

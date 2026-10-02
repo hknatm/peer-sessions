@@ -12,7 +12,7 @@ test('SIGKILL service recovery: stale socket, durable inbox/outbox and uncertain
  let child;
  async function boot(){child=spawn(process.execPath,[new URL('../src/cli.mjs',import.meta.url).pathname,'serve'],{env:{...process.env,PI_PEERS_DIR:dir},stdio:['ignore','pipe','pipe']});await new Promise((resolve,reject)=>{child.stdout.once('data',resolve);child.once('exit',()=>reject(new Error('Service exited before ready')));child.stderr.once('data',d=>reject(new Error(String(d))));});}
  try{
-  await boot();for(const session of['a','b'])await requestLocal(dir,'configure',{session,settings:{enabled:true,peers:['local'],auto:[]}});
+  await boot();for(const session of['a','b'])await requestLocal(dir,'configure',{session,settings:{enabled:true,project:{id:'p',label:'Project'},peers:['local'],auto:[]}});
   const a=(await requestLocal(dir,'attach',{session:'a',owner:'a'})).token,b=(await requestLocal(dir,'attach',{session:'b',owner:'b'})).token;
   const msg=await requestLocal(dir,'send',{session:'a',token:a,to:'host/b',body:'crash recovery',requestId:'kill-test'});
   // Wait for actual receipt, bounded by test deadline (not a production polling loop).

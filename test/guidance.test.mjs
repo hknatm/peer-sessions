@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {execFileSync} from 'node:child_process';
 import crypto from 'node:crypto';
 import {startService} from '../src/service.mjs';
 import {initialize,readConfig} from '../src/config.mjs';
@@ -11,15 +12,16 @@ import {loadHostRuntime} from './host-runtime.mjs';
 
 async function menuFixture(run,{running=true,pairing=false}={}){
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'peer-ui-')),old=process.env.PI_PEERS_DIR;process.env.PI_PEERS_DIR=dir;
+ execFileSync('git',['init',dir],{stdio:'ignore'});
  if(pairing)initialize(dir);
  const service=running?await startService(dir,{config:pairing?{...readConfig(dir),listen:{host:'127.0.0.1',port:0}}:{version:1,machine:'host',peers:{},listen:null},interval:60000}):undefined;
  const {jiti}=await loadHostRuntime(),extension=(await jiti.import(new URL('../extensions/peer.ts',import.meta.url).pathname)).default;
  const events={},commands={},notices=[],screens=[];let active=[],choices=[],inputs=[],confirmations=0,presented=0,confirmResult=false;
- const ctx={hasUI:true,mode:'tui',sessionManager:{getSessionId:()=> 's',getSessionFile:()=>'/s'},isIdle:()=>true,hasPendingMessages:()=>false,model:{provider:'p',id:'m'},ui:{setStatus(){},notify:(...args)=>notices.push(args),select:async(title,options)=>{screens.push({title,options});const choice=choices.shift();if(choice!==undefined)assert.ok(options.includes(choice),`Missing choice ${choice} in ${title}`);return choice;},input:async()=>inputs.shift(),editor:async()=>undefined,confirm:async()=>{confirmations++;return confirmResult;}}};
+ const ctx={cwd:dir,hasUI:true,mode:'tui',sessionManager:{getSessionId:()=> 's',getSessionFile:()=>'/s'},isIdle:()=>true,hasPendingMessages:()=>false,model:{provider:'p',id:'m'},ui:{setStatus(){},notify:(...args)=>notices.push(args),select:async(title,options)=>{screens.push({title,options});const choice=choices.shift();if(choice!==undefined)assert.ok(options.includes(choice),`Missing choice ${choice} in ${title}`);return choice;},input:async()=>inputs.shift(),editor:async()=>undefined,confirm:async()=>{confirmations++;return confirmResult;}}};
  try{
-  extension({on:(n,h)=>events[n]=h,registerCommand:(n,c)=>commands[n]=c,registerTool(){},getActiveTools:()=>active,setActiveTools:n=>active=n,getSessionName:()=> 'Session',sendMessage:()=>presented++});
+  extension({on:(n,h)=>events[n]=h,registerCommand:(n,c)=>commands[n]=c,registerTool(){},getActiveTools:()=>active,setActiveTools:n=>active=n,getSessionName:()=> 'Session',appendEntry(){},sendMessage:()=>presented++});
   await events.session_start({reason:'startup'},ctx);
-  await run({dir,service,ctx,notices,screens,commands,jiti,get confirmations(){return confirmations;},get presented(){return presented;},confirm(value){confirmResult=value;},async command(args='',select=[],input=[]){choices=[...select];inputs=[...input];await commands.peer.handler(args,ctx);assert.equal(choices.length,0);assert.equal(inputs.length,0);}});
+  await run({dir,service,ctx,notices,screens,commands,jiti,get confirmations(){return confirmations;},get presented(){return presented;},events,confirm(value){confirmResult=value;},async command(args='',select=[],input=[]){choices=[...select];inputs=[...input];await commands.peer.handler(args,ctx);assert.equal(choices.length,0);assert.equal(inputs.length,0);}});
  }finally{await events.session_shutdown?.();await service?.close();if(old===undefined)delete process.env.PI_PEERS_DIR;else process.env.PI_PEERS_DIR=old;fs.rmSync(dir,{recursive:true,force:true});}
 }
 
@@ -53,9 +55,9 @@ test('queue menus: empty guidance, reversible paging, state-appropriate actions 
  await menuFixture(async f=>{
   await f.command('enable');await f.command('', ['Inbox','Back']);await f.command('', ['Outbox','Back']);
   assert.ok(f.notices.some(([text])=>text.includes('Inbox empty')));assert.ok(f.notices.some(([text])=>text.includes('Outbox empty')));
-  const store=f.service.store;store.configure('sender',{enabled:true,peers:['local']});const token=store.attach('sender','sender').token;
+  const store=f.service.store;store.configure('sender',{enabled:true,project:store.session('s').project,peers:['local']});const token=store.attach('sender','sender').token;
   const receiver=store.attachments.get('s').token,ids=[];
-  for(let i=0;i<6;i++){const row=store.send('sender',token,{to:'host/s',body:`Message ${i}`,requestId:crypto.randomUUID()});store.receive(row.message,'host');ids.push(`local_${row.id}`);}
+  for(let i=0;i<6;i++){const row=store.send('sender',token,{to:'host/s',toProject:store.session('s').project.id,body:`Message ${i}`,requestId:crypto.randomUUID()});store.receive(row.message,'host');ids.push(`local_${row.id}`);}
   store.claim('s',receiver,ids[0],true);store.settled('s',receiver,ids[0],true);
   await f.command('', ['Inbox','Next page','Previous page','Back']);
   assert.ok(f.screens.some(s=>s.title==='Inbox — page 2'&&s.options.includes('Previous page')));
@@ -75,6 +77,30 @@ test('pairing addresses: HTTPS normalization without transport downgrade or URL 
  const {jiti}=await loadHostRuntime();const {pairingAddress}=await jiti.import(new URL('../extensions/manage.ts',import.meta.url).pathname);
  for(const [input,wanted]of [['192.168.1.20','https://192.168.1.20:7443'],[' 192.168.1.20:7444 ','https://192.168.1.20:7444'],['https://192.168.1.20:7443','https://192.168.1.20:7443'],['2001:db8::1','https://[2001:db8::1]:7443'],['[2001:db8::1]:7444','https://[2001:db8::1]:7444']])assert.equal(pairingAddress(input).origin,wanted);
  for(const input of ['http://192.168.1.20:7443','https://192.168.1.20:7443/path','https://192.168.1.20:7443?token=redacted','https://name.invalid:7443','https://192.168.1.20','0.0.0.0','::','not an address',''])assert.throws(()=>pairingAddress(input));
+});
+
+test('cross-project menu approval is reciprocal, cancellation-safe and separate from auto-start',async()=>{
+ await menuFixture(async f=>{
+  await f.command('enable');const own=f.service.store.session('s');
+  f.service.store.configure('other',{enabled:true,project:{id:'other',label:'Other project'},peers:['local']});
+  const label='1. Other project · host/other';
+  await f.command('cooperate',['Allow local project',label]);assert.deepEqual(f.service.store.session('s').allowedProjects,[]);
+  f.confirm(true);await f.command('cooperate',['Allow local project',label]);assert.deepEqual(f.service.store.session('s').allowedProjects,['host/other']);assert.deepEqual(f.service.store.session('s').auto,[]);
+  assert.equal((await requestLocal(f.dir,'list',{session:'s',token:f.service.store.attachments.get('s').token})).length,0);
+  f.service.store.configure('other',{enabled:true,project:{id:'other',label:'Other project'},allowedProjects:[`host/${own.project.id}`],peers:['local']});
+  assert.equal((await requestLocal(f.dir,'list',{session:'s',token:f.service.store.attachments.get('s').token}))[0].address,'host/other');
+  await f.command('cooperate',['Revoke project','host/other']);assert.deepEqual(f.service.store.session('s').allowedProjects,[]);
+ });
+});
+
+test('non-Git roots need explicit confirmation; cancellation does not enable participation',async()=>{
+ await menuFixture(async f=>{
+  const folder=fs.mkdtempSync(path.join(os.tmpdir(),'peer-nongit-'));f.ctx.cwd=folder;try{
+  await f.command('enable',[],[undefined]);assert.equal(f.service.store.session('s'),undefined);
+  await f.command('enable',[],[folder]);assert.equal(f.service.store.session('s'),undefined);
+  f.confirm(true);await f.command('enable',[],[folder]);assert.ok(f.service.store.session('s').enabled);assert.equal(f.confirmations,2);
+  }finally{fs.rmSync(folder,{recursive:true,force:true});}
+ });
 });
 
 test('listener activation failure restores previous configuration without exposing manager errors',async()=>{

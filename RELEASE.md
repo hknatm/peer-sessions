@@ -10,6 +10,12 @@ Package: `peer-sessions` — MIT license, copyright hknatm.
 4. Tag an approved release and install through Pi's git package manager on another host. npm publication requires separate owner authorization and registry credentials; the name is not reserved merely by publishing on GitHub.
 5. Test success is not a no-bugs guarantee or proof of real OS/LAN deployment. Keep known unverified boundaries in the README until verified.
 
+## Project-scoped v2 upgrade
+
+0.2.0 requires protocol/storage v2; upgrade the service on both hosts before cooperation. Test the v1 database backup/migration with legacy pending, paused and interrupted messages. Confirm old participation and auto-start are disabled, legacy mail cannot resume/execute, and cross-project approval is reciprocal. Test same checkout/subdirectory/symlink matching and separate worktree/non-Git behavior. Never run these migration tests on personal live state.
+
+A restored service unit is not a database downgrade. Old runtimes reject v2 storage; any downgrade needs an explicit offline full-state restore, preserving/reconciling messages created since the migration. Keep retained pre-migration snapshots private.
+
 ## Existing prototype installations
 
 Disable any earlier standalone `peer-sessions` prototype extension through `pi config` before installing this package, to avoid duplicate `/peers` and tool registrations. Private state remains separate and must not be deleted. Only one service may own a state directory. No automatic destructive migration is performed.

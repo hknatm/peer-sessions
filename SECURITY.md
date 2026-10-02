@@ -14,6 +14,8 @@ Local service sockets are mode 600 in a mode-700 state directory. Processes/exte
 
 LAN normal traffic requires pinned TLS machine identity and a 32-byte per-pair secret. Pair invitations are 32 random bytes, expire in five minutes, and require operator fingerprint verification on both hosts before approval. Anyone seeing an invitation can attempt pairing; never approve an unexpected request. UI/RPC/clipboard observers remain outside package guarantees.
 
+Project discovery/messaging is restricted to enabled sessions in the same canonical local checkout unless each participating session reciprocally approves the other project. Different hosts always need explicit project grants in addition to machine pairing. Roots stay local; project labels/opaque root hashes are not secrets or proof of anonymity. The paired service is trusted to assert its own session/project identity; malicious same-user processes/paired hosts are not sandboxed. Grants do not grant transcript access or concurrent-write safety. Legacy v1 participation is disabled by a backed-up v2 migration, never implicitly adopted.
+
 Auto-start is opt-in per sender and may cause model costs and tool side effects. Peer messages are untrusted input. No transcript/file/model credential API is remotely exposed, but a model with tools could independently disclose data; limit recipient tools/permissions appropriately.
 
 Revocation blocks subsequent messages/claims but cannot undo already accepted turns or side effects. Cancellation cannot recall a durably received message.

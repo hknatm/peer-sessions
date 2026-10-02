@@ -18,6 +18,6 @@ for(const script of ['install','postinstall','preinstall'])assert.equal(pkg.scri
 const output=JSON.parse(execFileSync('npm',['pack','--dry-run','--json','--ignore-scripts'],{cwd:root,encoding:'utf8'}));
 const files=output[0].files.map(f=>f.path);
 for(const name of files){if(!/^(?:package\.json|README\.md|SECURITY\.md|CHANGELOG\.md|RELEASE\.md|LICENSE|src\/[a-z-]+\.mjs|extensions\/[a-z-]+\.ts)$/.test(name))failures.push(`${name}: not in release allowlist`);inspect(path.join(root,name));}
-for(const name of ['LICENSE','src/service.mjs','src/setup.mjs','src/pairing.mjs','extensions/peer.ts','extensions/manage.ts'])assert.ok(files.includes(name),`Missing ${name}`);
+for(const name of ['LICENSE','src/service.mjs','src/setup.mjs','src/pairing.mjs','src/project.mjs','extensions/peer.ts','extensions/manage.ts'])assert.ok(files.includes(name),`Missing ${name}`);
 if(failures.length){console.error(failures.join('\n'));process.exit(1);}
 console.log(`Release check passed: ${files.length} npm files, no detected secret artifacts/personal paths, no bundled host dependencies. Static scanning is not proof against every secret format.`);
