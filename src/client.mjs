@@ -6,9 +6,9 @@ export function socketPath(dir) { return path.join(dir, 'service.sock'); }
 export async function requestLocal(dir, action, args = {}) {
  return jsonRequest(http, { socketPath: socketPath(dir), path: '/v1', method: 'POST' }, { version: VERSION, action, ...args });
 }
-export function jsonRequest(transport, options, body) {
+export function jsonRequest(transport, options, body, deadlineMs = 6000) {
  return new Promise((resolve, reject) => {
-  const deadline = setTimeout(() => req.destroy(new Error('Request deadline exceeded')), 6000);
+  const deadline = setTimeout(() => req.destroy(new Error('Request deadline exceeded')), deadlineMs);
   function finish(error, value) { clearTimeout(deadline); if(error) reject(error); else resolve(value); }
   const data = JSON.stringify(body);
   const req = transport.request({ ...options, headers: { ...options.headers, 'content-type': 'application/json', 'content-length': Buffer.byteLength(data) } }, res => {
@@ -17,6 +17,6 @@ export function jsonRequest(transport, options, body) {
    res.on('error', error => finish(error));
    res.on('end', () => { try { const out = JSON.parse(chunks); if (res.statusCode >= 400) finish(Object.assign(new Error(out.error ?? 'Peer request failed'), { status: res.statusCode })); else finish(null,out); } catch (e) { finish(e); } });
   });
-  req.setTimeout(5000, () => req.destroy(new Error('Connection timeout'))); req.on('error', error => finish(error)); req.end(data);
+  req.setTimeout(Math.min(5000,deadlineMs), () => req.destroy(new Error('Connection timeout'))); req.on('error', error => finish(error)); req.end(data);
  });
 }

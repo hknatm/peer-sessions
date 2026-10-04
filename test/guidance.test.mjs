@@ -16,12 +16,12 @@ async function menuFixture(run,{running=true,pairing=false}={}){
  if(pairing)initialize(dir);
  const service=running?await startService(dir,{config:pairing?{...readConfig(dir),listen:{host:'127.0.0.1',port:0}}:{version:1,machine:'host',peers:{},listen:null},interval:60000}):undefined;
  const {jiti}=await loadHostRuntime(),extension=(await jiti.import(new URL('../extensions/peer.ts',import.meta.url).pathname)).default;
- const events={},commands={},notices=[],screens=[];let active=[],choices=[],inputs=[],confirmations=0,presented=0,confirmResult=false;
- const ctx={cwd:dir,hasUI:true,mode:'tui',sessionManager:{getSessionId:()=> 's',getSessionFile:()=>'/s'},isIdle:()=>true,hasPendingMessages:()=>false,model:{provider:'p',id:'m'},ui:{setStatus(){},notify:(...args)=>notices.push(args),select:async(title,options)=>{screens.push({title,options});const choice=choices.shift();if(choice!==undefined)assert.ok(options.includes(choice),`Missing choice ${choice} in ${title}`);return choice;},input:async()=>inputs.shift(),editor:async()=>undefined,confirm:async()=>{confirmations++;return confirmResult;}}};
+ const events={},commands={},notices=[],screens=[];let active=[],choices=[],inputs=[],confirmations=0,presented=0,confirmResult=false,editorValue,busy=false,editorHook;
+ const ctx={cwd:dir,hasUI:true,mode:'tui',sessionManager:{getSessionId:()=> 's',getSessionFile:()=>'/s'},isIdle:()=>!busy,hasPendingMessages:()=>false,model:{provider:'p',id:'m'},ui:{setStatus(){},notify:(...args)=>notices.push(args),select:async(title,options)=>{screens.push({title,options});const choice=choices.shift();if(choice!==undefined)assert.ok(options.includes(choice),`Missing choice ${choice} in ${title}`);return choice;},input:async()=>inputs.shift(),editor:async()=>{if(editorHook)await editorHook();return editorValue;},confirm:async()=>{confirmations++;return confirmResult;}}};
  try{
   extension({on:(n,h)=>events[n]=h,registerCommand:(n,c)=>commands[n]=c,registerTool(){},getActiveTools:()=>active,setActiveTools:n=>active=n,getSessionName:()=> 'Session',appendEntry(){},sendMessage:()=>presented++});
   await events.session_start({reason:'startup'},ctx);
-  await run({dir,service,ctx,notices,screens,commands,jiti,get confirmations(){return confirmations;},get presented(){return presented;},events,confirm(value){confirmResult=value;},async command(args='',select=[],input=[]){choices=[...select];inputs=[...input];await commands.peer.handler(args,ctx);assert.equal(choices.length,0);assert.equal(inputs.length,0);}});
+  await run({dir,service,ctx,notices,screens,commands,jiti,get confirmations(){return confirmations;},get presented(){return presented;},events,busy(value){busy=value;},editor(value,hook){editorValue=value;editorHook=hook;},confirm(value){confirmResult=value;},async command(args='',select=[],input=[]){choices=[...select];inputs=[...input];await commands.peer.handler(args,ctx);assert.equal(choices.length,0);assert.equal(inputs.length,0);}});
  }finally{await events.session_shutdown?.();await service?.close();if(old===undefined)delete process.env.PI_PEERS_DIR;else process.env.PI_PEERS_DIR=old;fs.rmSync(dir,{recursive:true,force:true});}
 }
 
@@ -65,7 +65,7 @@ test('queue menus: empty guidance, reversible paging, state-appropriate actions 
   assert.ok(f.screens.some(s=>s.title==='Inbox — page 2'&&s.options.includes('Previous page')));
   const handled=store.get(ids[0]);const historyLabel=`1. handled · Message 0 · ${handled.id.slice(0,8)}`;
   await f.command('', ['Inbox','Next page',historyLabel,'Back','Back']);
-  assert.deepEqual(f.screens.filter(s=>s.title.includes(`Message ${ids[0]}`)).at(-1).options,['Back']);
+  assert.deepEqual(f.screens.filter(s=>s.title.includes(`Message ${ids[0].slice(0,12)}`)).at(-1).options,['Back']);
   const label=f.screens.filter(s=>s.title==='Inbox — page 1').at(-1).options[0];
   await f.command('', ['Inbox',label,'Accept and start turn','Back']);
   assert.equal(f.presented,0);assert.equal(store.get(ids[1]).state,'pending');assert.ok(f.confirmations>0);
@@ -78,12 +78,46 @@ test('queue menus: empty guidance, reversible paging, state-appropriate actions 
 test('session picker explains directional auto-start and shows usage/queue mode',async()=>{
  await menuFixture(async f=>{
   await f.command('enable');const s=f.service.store,own=s.session('s');s.configure('sender',{enabled:true,project:own.project,peers:['local']});s.attach('sender','sender');
-  const label='1. sender · '+own.project.label.slice(0,16)+' · ready · receive review';
+  const label='1. sender · '+own.project.label.slice(0,16)+' · ready · receive manual review';
   await f.command('', ['Sessions',label,'Details']);assert.ok(f.notices.some(([text])=>text.includes('busy messages wait')&&text.includes('Receive review = manual acceptance')));
+  const reviewMenu=f.screens.find(screen=>screen.title.includes('receive here: manual review'));assert.ok(!reviewMenu.options.includes('Allow urgent steering from this session'));
+  await f.command('', ['Sessions',label,'Delivery & permission help']);assert.ok(f.notices.some(([text])=>text.includes('OTHER session')));
+  const before=s.queue('s','out').length;f.editor('must not send');f.confirm(false);await f.command('', ['Sessions',label,'Send urgent message']);assert.equal(s.queue('s','out').length,before);
   f.confirm(true);await f.command('auto host/sender on');
-  const autoLabel=label.replace('receive review','receive auto');await f.command('', ['Sessions',autoLabel,'Back']);assert.ok(f.screens.some(s=>s.title.includes('incoming auto-start on')));
+  const autoLabel=label.replace('receive manual review','receive auto when idle');await f.command('', ['Sessions',autoLabel,'Back']);assert.ok(f.screens.some(s=>s.title.includes('receive here: auto when idle')));
+  await f.command('steer host/sender on');assert.deepEqual(s.session('s').steer,['host/sender']);
+  await f.command('settings',['Urgent steering & decisions','Back']);assert.ok(f.notices.some(([text])=>text.includes('not a hard interrupt')));
+  f.editor('Pause API changes until confirmed');await f.command('', ['Sessions',autoLabel.replace('receive auto when idle','receive auto + urgent'),'Send urgent message','Blocker — what must wait']);
+  const out=s.queue('s','out')[0];assert.equal(out.message.mode,'urgent');assert.equal(out.message.kind,'blocker');
+  await f.command('auto host/sender off');assert.deepEqual(s.session('s').steer,[]);await f.command('auto host/sender on');
+  f.confirm(false);await f.command('steer host/sender off');await f.command('steer host/sender on');assert.deepEqual(s.session('s').steer,[]);
   await f.command('settings',['Message allowance & costs','Back']);assert.ok(f.notices.some(([text])=>text.includes('not a token/cost cap')));
  });
+});
+
+test('session switch while composing cancels send instead of routing from the new session',async()=>{
+ await menuFixture(async f=>{
+  await f.command('enable');const s=f.service.store;s.configure('sender',{enabled:true,project:s.session('s').project,peers:['local']});s.attach('sender','sender');
+  f.editor('stale draft',async()=>{await f.events.session_shutdown();});
+  await f.command('', ['Sessions','1. sender · '+s.session('s').project.label+' · ready · receive manual review','Send message','Plain — request or update']);
+  assert.equal(s.queue('s','out').length,0);assert.ok(f.notices.some(([text,type])=>type==='error'&&text.includes('Session changed; send cancelled')));
+ });
+});
+
+test('busy inbox hides manual acceptance and explains queued auto work',async()=>{
+ await menuFixture(async f=>{
+  await f.command('enable');const s=f.service.store,own=s.session('s');s.configure('sender',{enabled:true,project:own.project,peers:['local']});const token=s.attach('sender','sender').token;
+  const out=s.send('sender',token,{to:'host/s',toProject:own.project.id,body:'review me',requestId:crypto.randomUUID()});s.receive(out.message,'host');f.busy(true);
+  await f.command('', ['Inbox',`1. review required · review me · ${('local_'+out.id).slice(0,8)}`,'Back','Back']);
+  const screen=f.screens.find(screen=>screen.title.startsWith('Message local_'));assert.deepEqual(screen.options,['Dismiss','Back']);assert.ok(f.notices.some(([text])=>text.includes('busy')&&text.includes('available when idle')));assert.equal(f.presented,0);assert.equal(s.get('local_'+out.id).state,'pending');
+ });
+});
+
+test('queue state descriptions distinguish transport, consumption and agreement',async()=>{
+ const {jiti}=await loadHostRuntime(),{queueReason,receiveMode}=await jiti.import(new URL('../extensions/guidance.ts',import.meta.url).pathname);
+ assert.equal(receiveMode({auto:[],steer:[]},'host/a'),'manual review');assert.equal(receiveMode({auto:['host/a'],steer:[]},'host/a'),'auto when idle');assert.equal(receiveMode({auto:['host/a'],steer:['host/a']},'host/a'),'auto + urgent');
+ for(const [state,expected]of [['received','Stored by recipient'],['consumed','not agreement'],['handled','not proof of agreement'],['uncertain','side effects'],['queued','retries'],['paused','resume']])assert.ok(queueReason({state,message:{}}).includes(expected));
+ assert.ok(queueReason({state:'pending',autoEligible:true,message:{mode:'urgent'}}).includes('steering boundary'));assert.ok(queueReason({state:'pending',autoEligible:false,message:{}}).includes('does not promote'));
 });
 
 test('pairing addresses: HTTPS normalization without transport downgrade or URL credentials',async()=>{

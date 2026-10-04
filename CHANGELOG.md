@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0 — Unreleased
+
+- Prompt-cache fix: peer presence is snapshotted once per user turn and placed right after that user message, keeping history append-only; no presence socket call on later requests in the turn.
+- Optional normal/urgent delivery and proposal/decision/blocker/result intent; plain messages remain supported. Intent is advisory, not authority or approval.
+- Separate exact-sender recipient steering permission requires auto-start first; old backlog is never promoted. Urgent injection only during active runs or idle, never hard aborts or session launch.
+- Multiple peer messages can share a run; track context consumption separately and mark unconsumed/interrupted urgent work uncertain. No automatic receipts-as-agreement or reply loops.
+- Active-turn boundary checks plus two-second busy polling fallback; idle polling stays 15 seconds. Existing hourly/conversation budgets apply.
+- Picker adds urgent send confirmation, explanatory intent choices and directional receive labels; steering grant shown only after auto-start. Queue details explain waiting/consumption/agreement and hide manual acceptance while busy. Compact context encourages explicit confirmation before shared decisions and pausing only dependent work.
+- Known offline urgent targets retain durable sends; delivery negotiates support before transmission, and duplicate request IDs do not require a live remote or consume allowance twice. Capability preflight is bounded below the local request deadline; stalled peers cannot turn successful durable queueing into an ambiguous local timeout. Session changes cancel picker drafts before sending.
+- Additive steering permission table (default empty), protocol/storage stay v2. Service capability and authenticated LAN negotiation reject unsupported urgent delivery. Both hosts should update services/adapters; downgrade with pending urgent work is unsupported.
+
 ## 0.2.1 — Main-branch update
 
 - Durable 40-message rolling-hour allowance per session across incoming/outgoing traffic and all peers. Deduplicated retries and acceptance are free; receiving limits preserve sender queues for retry.

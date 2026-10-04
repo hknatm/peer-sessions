@@ -20,6 +20,8 @@ Auto-start is opt-in per sender and may cause model costs and tool side effects.
 
 The default 40-message rolling-hour allowance is per persistent session across incoming/outgoing traffic, not a token or global machine budget. New session IDs have separate allowances. One accepted message can start many model/tool calls; chain budgets and concise-message guidance do not guarantee low token spend. Counters depend on the host clock and retained records; use operator-approved model/tool cost controls for strict spending limits.
 
+Urgent steering is separate exact-sender recipient permission, requires auto-start and counts against all existing budgets. It can influence active work at the next runtime steering boundary but never guarantees cancellation or rollback. Kind fields and decision text do not grant authority; proposals require explicit confirmation by convention, not a distributed locking/approval protocol. Messages without steering authorization remain manual. Context consumption is not agreement or proof of provider success. Old runtimes must not be used with pending urgent messages.
+
 Revocation blocks subsequent messages/claims but cannot undo already accepted turns or side effects. Cancellation cannot recall a durably received message.
 
 ## Reporting

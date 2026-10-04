@@ -15,13 +15,13 @@ test('Pi adapter: no default participation, preserves model, closed backlog/manu
  const {jiti}=await loadHostRuntime();const {default:extension}=await jiti.import(new URL('../extensions/peer.ts',import.meta.url).pathname);
  const events=new Map(),commands=new Map(),tools=new Map(),sent=[],notices=[];let active=['read'],busy=false;
  const ctx={cwd:dir,sessionManager:{getSessionId:()=> 'receiver',getSessionFile:()=>'/private/session'},model:{provider:'original',id:'selected'},thinkingLevel:'high',isIdle:()=>!busy,hasPendingMessages:()=>false,hasUI:true,ui:{notify:(...a)=>notices.push(a),setStatus(){},confirm:async()=>true}};
- const pi={on:(n,h)=>events.set(n,h),registerCommand:(n,h)=>commands.set(n,h),registerTool:t=>{tools.set(t.name,t);active.push(t.name);},getActiveTools:()=>active,setActiveTools:n=>active=n,getSessionName:()=> 'Receiver',sendMessage:(m,o)=>{sent.push({m,o});busy=true;}};
+ const pi={on:(n,h)=>events.set(n,h),registerCommand:(n,h)=>commands.set(n,h),registerTool:t=>{tools.set(t.name,t);active.push(t.name);},getActiveTools:()=>active,setActiveTools:n=>active=n,getSessionName:()=> 'Receiver',sendMessage:(m,o)=>{sent.push({m,o});if(!busy)events.get('agent_start')?.();busy=true;}};
  try{
   extension(pi);await events.get('session_start')({reason:'startup'},ctx);assert.equal(service.store.session('receiver'),undefined);assert.deepEqual(active,['read']);
   await commands.get('peers').handler('on',ctx);await commands.get('peers').handler('allow local',ctx);assert.ok(active.includes('peer_send'));
   service.store.configure('other',{enabled:true,project:{id:'other',label:'Other project'},peers:['local']});service.store.attach('other','other-owner');
   service.store.configure('sender',{enabled:true,project:service.store.session('receiver').project,peers:['local']});const st=service.store.attach('sender','sender-owner').token;
-  function send(body){const out=service.store.send('sender',st,{to:'host/receiver',toProject:service.store.session('receiver').project.id,body,requestId:crypto.randomUUID()});service.store.receive(out.message,'host');return `local_${out.id}`;}
+  function send(body,options={}){const out=service.store.send('sender',st,{to:'host/receiver',toProject:service.store.session('receiver').project.id,body,requestId:crypto.randomUUID(),...options});service.store.receive(out.message,'host');return `local_${out.id}`;}
   const awareness=await events.get('context')({messages:[]});assert.ok(awareness.messages[0].content.includes('sender'));assert.ok(!awareness.messages[0].content.includes('Other project'));assert.equal(sent.length,0);
   assert.equal(awareness.messages[0].display,false);assert.deepEqual((await tools.get('peer_list').execute()).content[0].type,'text');
   const again=await events.get('context')({messages:awareness.messages});assert.equal(again.messages.filter(m=>m.customType==='peer-presence').length,1);
@@ -45,8 +45,13 @@ test('Pi adapter: no default participation, preserves model, closed backlog/manu
   busy=false;await events.get('agent_settled')();await new Promise(r=>setTimeout(r,30));assert.equal(service.store.get(raced).state,'presented');assert.equal(sent.length,4);
   busy=false;events.get('agent_before_settle')({outcome:'completed'});await events.get('agent_settled')();await new Promise(r=>setTimeout(r,30));
   const simultaneous=send('concurrent acceptance');await Promise.all([commands.get('peer').handler('accept '+simultaneous,ctx),commands.get('peer').handler('accept '+simultaneous,ctx)]);assert.equal(sent.length,5);assert.equal(service.store.get(simultaneous).state,'presented');
-  await events.get('session_shutdown')({reason:'reload'});assert.equal(service.store.get(simultaneous).state,'uncertain');const backlog=send('while closed');
-  busy=false;await events.get('session_start')({reason:'reload'},ctx);assert.equal(sent.length,5);assert.equal(service.store.get(backlog).eligible,null);assert.equal(service.store.get(queued).eligible,null);
+  const earlyUrgent=send('earlier urgent',{mode:'urgent',kind:'blocker'});await commands.get('peer').handler('steer host/sender on',ctx);assert.equal(service.store.get(earlyUrgent).eligible,null);
+  const urgent=send('halt dependent API edit',{mode:'urgent',kind:'blocker'});await events.get('turn_end')();assert.equal(sent.length,6);assert.equal(sent[5].o.deliverAs,'steer');assert.equal(service.store.get(urgent).state,'presented');
+  await events.get('context')({messages:[{role:'custom',customType:'peer-message',details:{id:urgent}}]});assert.equal(service.store.get(urgent).state,'consumed');
+  events.get('agent_before_settle')({outcome:'completed'});busy=false;await events.get('agent_settled')();await new Promise(r=>setTimeout(r,30));assert.equal(service.store.get(urgent).state,'handled');assert.equal(service.store.get(simultaneous).state,'handled');
+  busy=true;events.get('agent_start')();const unconsumed=send('not consumed yet',{mode:'urgent'});await events.get('turn_end')();assert.equal(sent.length,7);events.get('agent_before_settle')({outcome:'completed'});busy=false;await events.get('agent_settled')();await new Promise(r=>setTimeout(r,30));assert.equal(service.store.get(unconsumed).state,'uncertain');
+  await events.get('session_shutdown')({reason:'reload'});const backlog=send('while closed');
+  busy=false;await events.get('session_start')({reason:'reload'},ctx);assert.equal(sent.length,7);assert.equal(service.store.get(backlog).eligible,null);assert.equal(service.store.get(queued).eligible,null);
   await commands.get('peers').handler('off',ctx);assert.equal(service.store.session('receiver').enabled,0);assert.ok(!active.includes('peer_send'));
   const disabled=await events.get('context')({messages:awareness.messages});assert.equal(disabled.messages.length,0);
   const fork={...ctx,sessionManager:{getSessionId:()=> 'fork-id',getSessionFile:()=>'/fork'}};await events.get('session_shutdown')({reason:'fork'});await events.get('session_start')({reason:'fork'},fork);assert.equal(service.store.session('fork-id'),undefined);assert.ok(notices.length>0);

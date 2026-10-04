@@ -27,6 +27,14 @@ export const HELP: Record<string,string> = {
   'New authorized messages wait while busy and start one at a time when idle (poll fallback within 15 seconds). No first-message acceptance is needed. Earlier backlog, service restart/reattachment and uncertain/interrupted turns require manual acceptance. An uncertain turn may already have performed work; inspect it before retrying.',
   'Revoking a paired machine affects ALL sessions on this host. Stopping the service disconnects all sessions. Neither operation deletes queues.'
  ].join('\n\n'),
+ 'Urgent steering & decisions': [
+  'Normal messages wait for idle. Urgent messages may enter active work only after this recipient separately authorizes the exact sender: Sessions → Allow urgent steering. Auto-start must already be enabled.',
+  'Urgent detection uses active-turn boundaries plus a 2-second busy polling fallback (15 seconds idle). Steering is not a hard interrupt: it cannot stop a running tool, undo actions or guarantee immediate delivery. No session is reopened.',
+  'Without steering permission, an urgent message stays in Inbox for manual review. Granting permission does not promote earlier backlog. Revocation stops future claims, not work already injected.',
+  'Kinds: proposal, decision, blocker, result; plain messages remain valid. Kind is advisory, never approval or extra authority. For shared/irreversible decisions send a proposal, link replies by parent ID and wait for explicit confirmation before acting. Pause only dependent work; continue independent work.',
+  'A stored receipt is not agreement. Consumed means included in a model context preparation, not proof of understanding. Handled means the containing run settled successfully, not proof of task success or acceptance. Unconsumed/interrupted steering is uncertain and needs review.',
+  'Keep urgent corrections short and actionable. No inferred urgency, automatic acknowledgement/reply, abort or negotiation loop. Steering shares the existing message and conversation budgets.'
+ ].join('\n\n'),
  'Message allowance & costs': [
   'Each session shares 40 new incoming + outgoing messages per rolling hour across all peers. Retries/duplicates and acceptance do not count again. Counters survive restarts; cancelled records still count until their hour expires.',
   'At the receive limit, the sender keeps the message queued and retries. At the send limit, a new send fails visibly; retry after the time shown in Status. No messages are silently dropped.',
@@ -56,6 +64,8 @@ export const HELP: Record<string,string> = {
   '/peer delivery MESSAGE_ID — transport receipt, not execution proof',
   '/peer allow MACHINE | deny MACHINE — session machine permission (local for this computer)',
   '/peer auto MACHINE/SESSION on|off — automatic turns; enabling requires confirmation',
+  '/peer steer MACHINE/SESSION on|off — separate urgent steering permission; requires auto-start first',
+  'Use Sessions → Send urgent message and select an intent; agent peer_send accepts mode/kind and parent.',
   '/peers — compatibility alias. Use the menus for queue pause/resume/cancel/dismiss.'
  ].join('\n')
 };
@@ -88,11 +98,26 @@ export function sessionStatus(health:any,config:any,attached:boolean,session:str
   `Project: ${config?.project?.label??'not confirmed'}`,
   `Project address: ${config?.project?`${health.machine}/${config.project.id}`:'enable to confirm project'}`,
   `Cross-project approvals: ${config?.allowedProjects?.length??0}`,
-  `Allowed machines: ${config?.peers?.length??0} · auto-start senders: ${config?.auto?.length??0}`,
+  `Allowed machines: ${config?.peers?.length??0} · auto-start senders: ${config?.auto?.length??0} · urgent steering senders: ${config?.steer?.length??0}`,
   'Machine pairing does not grant project cooperation; both sessions must approve separately.',
   'Pairing and session permission are separate. /peer settings explains setup.'
  ].join('\n');
 }
+export function receiveMode(config:any,sender:string){
+ return config?.steer?.includes(sender)?'auto + urgent':config?.auto?.includes(sender)?'auto when idle':'manual review';
+}
+export function queueReason(row:any){
+ if(row.state==='uncertain')return 'Review required: previous work may have had side effects. Inspect before retrying.';
+ if(row.state==='pending')return row.autoEligible?(row.message.mode==='urgent'?'Automatic urgent delivery: waiting for a supported steering boundary; not a hard interrupt.':'Automatic delivery: waits until this session is idle. No manual acceptance needed.'):'Manual review: backlog, missing sender permission or revoked eligibility. Granting permission does not promote this message.';
+ if(row.state==='consumed')return 'Included in model context preparation; awaiting run settlement. This is not agreement.';
+ if(row.state==='presented'||row.state==='processing')return 'Reserved or queued into Pi; not yet proof of model consumption or completed work.';
+ if(row.state==='handled')return 'Containing run settled successfully; not proof of agreement or task success.';
+ if(row.state==='received')return 'Stored by recipient; its agent may not have processed it. Cannot be recalled.';
+ if(row.state==='queued')return 'Sender retains this message and retries while permissions, limits and deadline allow.';
+ if(row.state==='paused')return 'Sending paused; resume from Outbox. Already in-flight sends may still arrive.';
+ return 'Stored record retained; delivery and work cannot be inferred from this state.';
+}
+export const MESSAGE_INTENTS=['Plain — request or update','Proposal — needs confirmation','Decision — report, not approval','Blocker — what must wait','Result — brief outcome','Back'];
 export function menuText(value:unknown,max=48){
  return String(value??'').replace(/[\x00-\x1f\x7f-\x9f]/g,' ').replace(/\s+/g,' ').trim().slice(0,max);
 }

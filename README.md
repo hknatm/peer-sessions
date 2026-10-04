@@ -84,11 +84,38 @@ The recipient uses its own currently selected model/thinking level. Transport ne
 
 Each host owns a SQLite inbox/outbox in private state. The sender retains undelivered messages; the recipient acknowledges only after committing its inbox. `/peer` → **Outbox** can pause/resume pending sends and cancel an unsent entry. In-flight cancellation is refused; received messages cannot be recalled. **Inbox** can accept or dismiss stored entries. Records remain for deduplication/audit; no automatic deletion/archive command.
 
-States distinguish transport from work: queued, paused, received (durable receipt), pending, processing, presented, handled (turn settled, not proof of task success), uncertain, expired, rejected, cancelled. Transport retries are deduplicated; side effects are not guaranteed exactly once.
+States distinguish transport from work: queued, paused, received (durable receipt), pending, processing, presented, consumed (included in model context preparation), handled (turn settled, not proof of task success), uncertain, expired, rejected, cancelled. Transport retries are deduplicated; side effects are not guaranteed exactly once.
 
 Default limits (editable in private config, restart service): **40 new incoming + outgoing messages per session per rolling hour, shared across all peers**; chain depth 40; 40 messages and 40 wake attempts per conversation **per host**; 24-hour immutable deadline; 32 KiB payload; 10,000 retained rows; 1,000 outstanding rows per mailbox/direction; rate 60/minute; attachment lease 60 seconds. Direct transport has one hop. Related-request depth is adjustable, not unrestricted mesh routing. Hourly usage uses retained message timestamps and survives restarts; retries/duplicates and later acceptance do not count again. Cancellation does not refund usage. A limited recipient leaves delivery queued at the sender for retry; a new send at the sender limit fails with the next-slot time. This is a traffic limit, not a token/cost ceiling. Existing private limit overrides still apply. New unrelated conversations can be created, so this is not a global agent sandbox. Clocks should be synchronized. `/peer status` and the main picker show hourly usage; Inbox distinguishes **auto when idle** from **review required**. New arrivals from an authorized sender wait while busy and start one at a time after settlement (15-second polling fallback). Messages predating permission, reattachment/service restart backlog and uncertain turns stay manual. Auto-start does not auto-reply. Keep requests/results brief and link related replies with the inbox parent ID.
 
 After installing 0.2.1, restart Pi and use **Service → Update/reinstall service** on each host. The adapter requires the hourly-limit service capability rather than silently using an older service; protocol/storage remain v2, and no additional destructive migration is introduced. Hosts with the older four-step ceiling may reject messages from updated hosts until both are updated.
+
+## Urgent steering and decision coordination (0.3.0)
+
+Normal messages remain the default and wait for idle. To let a specific sender provide urgent updates during work, first allow its auto-start, then use **Sessions → Allow urgent steering from this session** or `/peer steer MACHINE/SESSION on`. Steering is separate recipient permission, off by default. Disabling auto-start also removes steering. Earlier backlog, closed/restarted sessions and uncertain messages stay manual. Unapproved urgent mail remains stored for review, not silently converted to automatic normal delivery.
+
+Session rows show **manual review**, **auto when idle** or **auto + urgent** for messages received HERE from that sender—not the other session’s permissions. Use **Delivery & permission help** for the distinction; enabling steering is offered only after auto-start. Sending urgently includes confirmation of the recipient-controlled behavior.
+
+Use **Send urgent message** in Sessions; select an intent with its meaning (Plain, Proposal, Decision, Blocker or Result). Inbox explains why a message waits, distinguishes consumption from agreement, and offers manual acceptance only when idle. Agents may call:
+
+```text
+peer_send({to:"MACHINE/SESSION", mode:"urgent", kind:"blocker", body:"Pause the shared API change; compatibility is unresolved.", parent:"INCOMING_INBOX_ID"})
+```
+
+`parent` links related work; omit it only for a genuinely new request. `mode` defaults to normal and `kind` is optional. No extra protocol task/approval engine is introduced.
+
+- **Proposal:** request explicit confirmation before a shared/irreversible decision.
+- **Decision:** report a decision; the label grants no authority or operator approval.
+- **Blocker:** identify the affected work and what needs resolving.
+- **Result:** give the brief outcome or evidence; no automatic reply is necessary.
+
+Pause only work dependent on unresolved confirmation; continue independent work. Kind/steering do not enforce agreement or concurrent-write safety. Delivery receipts mean storage, never agreement.
+
+Urgent detection checks active-turn boundaries with a two-second busy polling fallback (15 seconds idle); the runtime consumes steering at its next supported boundary. This cannot stop a running tool, undo side effects, guarantee an immediate response or reopen a session. Compaction/other non-run busy states do not permit injection. No urgency classification model calls, automatic aborts/acknowledgements/replies, or urgency budget exemptions.
+
+Tracking distinguishes presented (queued into Pi), consumed (observed in context preparation), and handled (containing run settled successfully). Consumption is not proof the provider succeeded or the agent understood/agreed. Unconsumed or interrupted urgent work becomes uncertain for manual reconciliation.
+
+Restart Pi and **update the service on both hosts** for 0.3.0. Steering permissions are an additive empty-by-default table; wire/storage versions stay v2. Adapters require `urgent-steer-v1`, and authenticated LAN capability checks prevent urgent delivery to an old service. A known offline target can still receive queued urgent sends using retained project identity; delivery negotiates capability before transmitting the message, and a repeated request ID returns the existing record. Urgency does not bypass permission or make offline delivery immediate. Old adapters never receive automatic urgent eligibility. Do not downgrade with pending urgent work; old software does not understand consumption or urgency. Retain private backups and inspect backlog after upgrades.
 
 ## Service, updates and recovery
 

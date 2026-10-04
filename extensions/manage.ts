@@ -44,7 +44,7 @@ export async function changeListener(dir:string,listen:{host:string,port:number}
 export async function ensureService(dir:string,ctx:ExtensionContext){
  try{
   const health=await requestLocal(dir,'health');
-  if(!health.capabilities?.includes('session-hourly-v1'))throw new Error('Hourly-limit service required. Use /peer → Service → Update/reinstall service, then re-enable this session.');
+  if(!health.capabilities?.includes('urgent-steer-v1'))throw new Error('Urgent-capable service required. Use /peer → Service → Update/reinstall service, then re-enable this session.');
   return health;
  }catch(error:any){if(!['ENOENT','ECONNREFUSED'].includes(error.code)){
   if(error.status===409)throw new Error('Service protocol changed. Use /peer → Service → Update/reinstall service, then re-enable this session.');

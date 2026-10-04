@@ -36,8 +36,20 @@ test('real mutual TLS: delivery, offline sender queue, receiver restart, revocat
   assert.equal((await rawRequest(sb.address.port,{version:2,action:'list'},{'x-peer-machine':'a',authorization:'Bearer wrong'},cert,key)).status,403);
   assert.equal((await rawRequest(sb.address.port,{version:99,action:'list'},{'x-peer-machine':'a',authorization:`Bearer ${secret}`},cert,key)).status,409);
   assert.equal((await rawRequest(sb.address.port,{version:2,action:'configure'},{'x-peer-machine':'a',authorization:`Bearer ${secret}`},cert,key)).status,403);
+  sb.store.configure('s2',{...sb.store.session('s2'),enabled:true,steer:['a/s1']});await requestLocal(b,'heartbeat',{session:'s2',token:bt,info:{busy:true,running:true,steering:true}});
+  const urgent={...args,body:'urgent correction',requestId:uid(),mode:'urgent',kind:'blocker'};await requestLocal(a,'send',urgent);await sa.flush();assert.equal(sa.store.get(urgent.requestId).state,'received');assert.equal(sb.store.get(urgent.requestId).eligible,bt);
+  await requestLocal(b,'claim',{session:'s2',token:bt,id:urgent.requestId,steering:true});await requestLocal(b,'consumed',{session:'s2',token:bt,id:urgent.requestId});await requestLocal(b,'settled',{session:'s2',token:bt,id:urgent.requestId,completed:true});assert.equal(sb.store.get(urgent.requestId).state,'handled');
   const port=sb.address.port;await sb.close();sb=null;
-  const offline={...args,body:'while host down',requestId:uid()};await requestLocal(a,'send',offline);await sa.flush();assert.equal(sa.store.get(offline.requestId).state,'queued');
+  let legacyReceives=0;const oldServer=https.createServer({key:fs.readFileSync(path.join(b,'identity.key')),cert:fs.readFileSync(path.join(b,'identity.crt'))},async(req,res)=>{let data='';for await(const chunk of req)data+=chunk;if(JSON.parse(data).action==='receive')legacyReceives++;res.writeHead(403,{'content-type':'application/json'});res.end(JSON.stringify({error:'Remote operation forbidden'}));});await new Promise(r=>oldServer.listen(port,'127.0.0.1',r));
+  try{
+   await assert.rejects(requestLocal(a,'send',{...urgent,requestId:uid()}),/Remote operation forbidden/);
+   const staged=sa.store.send('s1',token,{...urgent,toProject:'pb',requestId:uid()});await sa.flush();assert.equal(sa.store.get(staged.id).state,'rejected');assert.equal(legacyReceives,0);
+  }finally{await new Promise(r=>oldServer.close(r));}
+
+  assert.equal((await requestLocal(a,'send',urgent)).id,urgent.requestId);
+  const silentServer=https.createServer({key:fs.readFileSync(path.join(b,'identity.key')),cert:fs.readFileSync(path.join(b,'identity.crt'))},()=>{});await new Promise(r=>silentServer.listen(port,'127.0.0.1',r));
+  try{const stalled={...urgent,body:'slow capability check',requestId:uid()};const started=Date.now();assert.equal((await requestLocal(a,'send',stalled)).id,stalled.requestId);assert.ok(Date.now()-started<4000);assert.equal(sa.store.get(stalled.requestId).state,'queued');}finally{await new Promise(r=>silentServer.close(r));}
+  const offline={...args,body:'while host down',requestId:uid(),mode:'urgent',kind:'blocker'};await requestLocal(a,'send',offline);await sa.flush();assert.equal(sa.store.get(offline.requestId).state,'queued');
   await sa.close();sa=null;
   cb.listen.port=port;sb=await startService(b,{config:cb,interval:60000});sa=await startService(a,{config:ca,interval:60000});sa.store.db.prepare('UPDATE messages SET next=0').run();await sa.flush();assert.equal(sa.store.get(offline.requestId).state,'received');assert.equal(sb.store.get(next.requestId).eligible,null);
   const certHeaders={'x-peer-machine':'a',authorization:`Bearer ${secret}`};

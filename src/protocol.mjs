@@ -12,6 +12,8 @@ export function validateMessage(m, limits = DEFAULTS) {
  ensure(m && m.version === VERSION, 'Unsupported protocol version', 409);
  for (const key of ['id', 'conversation', 'fromMachine', 'fromSession', 'toMachine', 'toSession']) id(m[key]);
  id(m.fromProject);id(m.toProject);
+ ensure(m.mode===undefined||['normal','urgent'].includes(m.mode),'Invalid delivery mode');
+ ensure(m.kind===undefined||['proposal','decision','blocker','result'].includes(m.kind),'Invalid message kind');
  if (m.parent !== undefined && m.parent !== null) id(m.parent);
  ensure(typeof m.body === 'string' && !/[\x00-\x08\x0b-\x1f\x7f]/.test(m.body) && m.body.trim().length > 0 && Buffer.byteLength(m.body) <= limits.maxPayload, 'Invalid or oversized message');
  ensure(Number.isSafeInteger(m.depth) && m.depth >= 1 && m.depth <= limits.maxDepth, 'Chain depth exceeded');

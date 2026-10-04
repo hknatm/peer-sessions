@@ -10,6 +10,10 @@ Package: `peer-sessions` — MIT license, copyright hknatm.
 4. Tag an approved release and install through Pi's git package manager on another host. npm publication requires separate owner authorization and registry credentials; the name is not reserved merely by publishing on GitHub.
 5. Test success is not a no-bugs guarantee or proof of real OS/LAN deployment. Keep known unverified boundaries in the README until verified.
 
+## Urgent steering 0.3.0 update
+
+Test separate permission, cancellation and revoke/regrant, busy vs non-run-busy injection, multiple messages in one run, consumption/settlement races, abort/crash/reload uncertainty, hourly/chain budgets and legacy LAN capability refusal. Real Pi tests use a local zero-cost provider. Update adapter/service on both hosts; additive `steering_permissions` table defaults empty and wire/storage remain v2. Downgrade with pending urgent work is unsupported; use isolated full-state restore if necessary. Inspect all picker intent/permission screens at narrow/wide terminal widths.
+
 ## Hourly-limit 0.2.1 update
 
 Test persistent per-session rolling-hour accounting, duplicate retries, queue retention on receive limits, claim/idle races and one-at-a-time auto draining. Restart Pi and update each host’s service; the adapter checks `session-hourly-v1` capability. Existing limit overrides are preserved. No schema-version change beyond v2. Never test against personal queues or providers; the real lifecycle test uses a local stub with zero usage and no HTTP calls.

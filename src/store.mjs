@@ -23,7 +23,7 @@ export class Store {
     this.db.exec(`BEGIN IMMEDIATE;
      CREATE TABLE project_sessions (session TEXT PRIMARY KEY,project TEXT NOT NULL,label TEXT NOT NULL,allowed TEXT NOT NULL);
      UPDATE sessions SET enabled=0,auto='[]';
-     UPDATE messages SET eligible=NULL,state=CASE WHEN state IN ('processing','presented') THEN 'uncertain' ELSE state END WHERE direction='in';
+     UPDATE messages SET eligible=NULL,state=CASE WHEN state IN ('processing','presented','consumed') THEN 'uncertain' ELSE state END WHERE direction='in';
      UPDATE messages SET state='paused',error='Project permissions require re-enabling after upgrade' WHERE direction='out' AND state='queued';
      PRAGMA user_version=2;COMMIT;`);
    }catch(error){try{this.db.exec('ROLLBACK');}catch{}this.db.close();throw error;}
@@ -34,6 +34,7 @@ export class Store {
    CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, direction TEXT NOT NULL, session TEXT NOT NULL, envelope TEXT NOT NULL, state TEXT NOT NULL, received INTEGER NOT NULL, eligible TEXT, error TEXT, attempts INTEGER NOT NULL DEFAULT 0, next INTEGER NOT NULL DEFAULT 0);
    CREATE INDEX IF NOT EXISTS message_session ON messages(session,direction,state);
    CREATE INDEX IF NOT EXISTS message_hour ON messages(session,received);
+   CREATE TABLE IF NOT EXISTS steering_permissions (session TEXT PRIMARY KEY, senders TEXT NOT NULL);
    CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, expires INTEGER NOT NULL, messages INTEGER NOT NULL, wakes INTEGER NOT NULL);
    CREATE TABLE IF NOT EXISTS project_sessions (session TEXT PRIMARY KEY,project TEXT NOT NULL,label TEXT NOT NULL,allowed TEXT NOT NULL);
    PRAGMA user_version=2;`);
@@ -41,34 +42,38 @@ export class Store {
   if(identity && identity.value !== machine){this.db.close();throw new Error('Database belongs to a different machine identity');}
   this.db.prepare("INSERT OR IGNORE INTO metadata VALUES ('machine',?)").run(machine);
   this.attachments = new Map(); this.rates = new Map();this.inFlight=new Set();this.reservations=new Map();
-  this.db.prepare("UPDATE messages SET eligible=NULL,state=CASE WHEN state IN ('processing','presented') THEN 'uncertain' ELSE state END WHERE direction='in'").run();
+  this.db.prepare("UPDATE messages SET eligible=NULL,state=CASE WHEN state IN ('processing','presented','consumed') THEN 'uncertain' ELSE state END WHERE direction='in'").run();
  }
  transaction(fn) { this.db.exec('BEGIN IMMEDIATE'); try { const out = fn(); this.db.exec('COMMIT'); return out; } catch (e) { this.db.exec('ROLLBACK'); throw e; } }
  session(sid) {
   const row=this.db.prepare('SELECT * FROM sessions WHERE id=?').get(id(sid));
   const project=this.db.prepare('SELECT * FROM project_sessions WHERE session=?').get(sid);
-  return row&&{...row,peers:JSON.parse(row.peers),auto:JSON.parse(row.auto),project:project?{id:project.project,label:project.label}:null,allowedProjects:project?JSON.parse(project.allowed):[]};
+  return row&&{...row,peers:JSON.parse(row.peers),auto:JSON.parse(row.auto),steer:JSON.parse(this.db.prepare('SELECT senders FROM steering_permissions WHERE session=?').get(sid)?.senders??'[]'),project:project?{id:project.project,label:project.label}:null,allowedProjects:project?JSON.parse(project.allowed):[]};
  }
- configure(sid, { enabled, label = sid, peers = [], auto = [], project, allowedProjects }) {
+ configure(sid, { enabled, label = sid, peers = [], auto = [], steer, project, allowedProjects }) {
   id(sid); text(label, 100); ensure(typeof enabled === 'boolean' && Array.isArray(peers) && peers.length <= 100 && Array.isArray(auto), 'Invalid session permissions');
   peers.forEach(p => { if (p !== 'local') id(p); }); auto.forEach(p => { address(p); ensure(peers.includes(address(p).machine === this.machine ? 'local' : address(p).machine), 'Auto sender must be allowed'); });
   const old=this.session(sid),p=project?validateProject(project):old?.project;
   ensure(!enabled||p,'Enable requires a confirmed project identity');
   ensure(!old?.project||!p||old.project.id===p.id,'Session project changed; disable and use a new session',409);
+  const steering=steer??(old?.steer??[]).filter(sender=>auto.includes(sender));
+  ensure(Array.isArray(steering)&&steering.length<=100,'Invalid steering permissions');steering.forEach(sender=>{address(sender);ensure(auto.includes(sender),'Steering sender must have auto-start permission');});
   const allowed=allowedProjects??old?.allowedProjects??[];
   ensure(Array.isArray(allowed)&&allowed.length<=100,'Invalid cross-project permissions');allowed.forEach(value=>address(value));
   this.transaction(()=>{
    this.db.prepare('INSERT INTO sessions VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled,label=excluded.label,peers=excluded.peers,auto=excluded.auto').run(sid, +enabled, label, JSON.stringify(peers), JSON.stringify(auto));
+   this.db.prepare('INSERT INTO steering_permissions VALUES (?,?) ON CONFLICT(session) DO UPDATE SET senders=excluded.senders').run(sid,JSON.stringify(steering));
    if(p)this.db.prepare('INSERT INTO project_sessions VALUES (?,?,?,?) ON CONFLICT(session) DO UPDATE SET label=excluded.label,allowed=excluded.allowed').run(sid,p.id,p.label,JSON.stringify(allowed));
   });
   const resetEligibility=JSON.stringify(old?.allowedProjects??[])!==JSON.stringify(allowed)||JSON.stringify(old?.peers??[])!==JSON.stringify(peers)||!enabled;
   for(const [mid,prior]of this.reservations){const row=this.get(mid),sender=`${row.message.fromMachine}/${row.message.fromSession}`;
-   if((row.session===sid&&(resetEligibility||!auto.includes(sender)))||(resetEligibility&&row.message.fromMachine===this.machine&&row.message.fromSession===sid))prior.eligible=null;
+   if((row.session===sid&&(resetEligibility||!auto.includes(sender)||(row.message.mode==='urgent'&&!steering.includes(sender))))||(resetEligibility&&row.message.fromMachine===this.machine&&row.message.fromSession===sid))prior.eligible=null;
   }
   if(resetEligibility){
    this.db.prepare("UPDATE messages SET eligible=NULL WHERE direction='in' AND (session=? OR (json_extract(envelope,'$.fromMachine')=? AND json_extract(envelope,'$.fromSession')=?))").run(sid,this.machine,sid);
   }
   this.db.prepare("UPDATE messages SET eligible=NULL WHERE session=? AND direction='in' AND json_extract(envelope,'$.fromMachine') || '/' || json_extract(envelope,'$.fromSession') NOT IN (SELECT value FROM json_each(?))").run(sid,JSON.stringify(auto));
+  this.db.prepare("UPDATE messages SET eligible=NULL WHERE session=? AND direction='in' AND json_extract(envelope,'$.mode')='urgent' AND json_extract(envelope,'$.fromMachine') || '/' || json_extract(envelope,'$.fromSession') NOT IN (SELECT value FROM json_each(?))").run(sid,JSON.stringify(steering));
   if (!enabled) this.detach(sid);
   return this.session(sid);
  }
@@ -79,7 +84,7 @@ export class Store {
   const token = old?.token ?? crypto.randomUUID();
   // Every new attachment starts with manual backlog, even if the service restarted.
   if (!old) this.db.prepare("UPDATE messages SET eligible=NULL WHERE session=? AND direction='in'").run(sid);
-  this.attachments.set(sid, { owner, token, expires: Date.now() + this.limits.leaseMs, busy: !!info.busy, model: typeof info.model === 'string' ? info.model.slice(0, 128) : '', thinking: typeof info.thinking === 'string' ? info.thinking.slice(0, 32) : '' });
+  this.attachments.set(sid, { owner, token, expires: Date.now() + this.limits.leaseMs, busy: !!info.busy, steering: info.steering===true, running:info.running===true, model: typeof info.model === 'string' ? info.model.slice(0, 128) : '', thinking: typeof info.thinking === 'string' ? info.thinking.slice(0, 32) : '' });
   return { token, machine: this.machine, limits: this.limits };
  }
  authorized(sid, token) { const a = this.live(sid); ensure(a && a.token === token && this.session(sid)?.enabled, 'Attachment expired or disabled', 403); return a; }
@@ -88,7 +93,7 @@ export class Store {
   const a = this.attachments.get(sid); if (token && a?.token !== token) return;
   this.attachments.delete(sid);
   for(const mid of this.reservations.keys())if(this.get(mid)?.session===sid)this.reservations.delete(mid);
-  this.db.prepare("UPDATE messages SET eligible=NULL,state=CASE WHEN state IN ('processing','presented') THEN 'uncertain' ELSE state END WHERE session=? AND direction='in'").run(sid);
+  this.db.prepare("UPDATE messages SET eligible=NULL,state=CASE WHEN state IN ('processing','presented','consumed') THEN 'uncertain' ELSE state END WHERE session=? AND direction='in'").run(sid);
  }
  permitted(sid, machine) { const s = this.session(sid); return !!(s?.enabled && s.peers.includes(machine === this.machine ? 'local' : machine)); }
  projectAllowed(sid,machine,project){
@@ -120,16 +125,16 @@ export class Store {
   this.db.prepare('INSERT INTO conversations VALUES (?,?,1,0) ON CONFLICT(id) DO UPDATE SET messages=messages+1').run(m.conversation, m.expires);
  }
  get(mid) { const r = this.db.prepare('SELECT * FROM messages WHERE id=?').get(id(mid)); return r && { ...r, message: JSON.parse(r.envelope) }; }
- send(sid, token, { to, body, parent, requestId, toProject }) {
+ send(sid, token, { to, body, parent, requestId, toProject, mode='normal', kind }) {
   this.authorized(sid, token); const target = address(to); ensure(this.permitted(sid, target.machine), 'Target machine not permitted', 403);
   const source=this.session(sid);id(toProject);
   ensure(this.projectAllowed(sid,target.machine,toProject),'Target project not permitted',403);
   if(target.machine===this.machine)ensure(this.session(target.session)?.project?.id===toProject&&this.localAllowed(sid,target.session),'Cross-project approval required on both sessions',403);
   const mid = id(requestId); const existing = this.get(mid);
-  if (existing) { ensure(existing.direction === 'out' && existing.session === sid && existing.message.body === body && existing.message.toMachine === target.machine && existing.message.toSession === target.session && existing.message.toProject===toProject && existing.message.parent === (parent ? this.get(parent)?.message.id : null), 'Conflicting message ID', 409); return existing; }
+  if (existing) { ensure(existing.direction === 'out' && existing.session === sid && (existing.message.mode??'normal')===mode&&existing.message.kind===kind&&existing.message.body === body && existing.message.toMachine === target.machine && existing.message.toSession === target.session && existing.message.toProject===toProject && existing.message.parent === (parent ? this.get(parent)?.message.id : null), 'Conflicting message ID', 409); return existing; }
   this.rate(`send:${sid}`);
   let p; if (parent) { p = this.get(parent); ensure(p && p.session === sid && p.direction === 'in', 'Unknown incoming parent'); }
-  const m = validateMessage({ version: VERSION, id: mid, conversation: p?.message.conversation ?? crypto.randomUUID(), fromMachine: this.machine, fromSession: sid, toMachine: target.machine, toSession: target.session, fromProject:source.project.id,toProject, body, depth: p ? p.message.depth + 1 : 1, maxDepth: p?.message.maxDepth ?? this.limits.maxDepth, parent: p?.message.id ?? null, expires: p?.message.expires ?? Date.now() + this.limits.ttlMs }, this.limits);
+  const m = validateMessage({ version: VERSION, id: mid, conversation: p?.message.conversation ?? crypto.randomUUID(), fromMachine: this.machine, fromSession: sid, toMachine: target.machine, toSession: target.session, fromProject:source.project.id,toProject, body, mode, ...(kind!==undefined?{kind}:{}), depth: p ? p.message.depth + 1 : 1, maxDepth: p?.message.maxDepth ?? this.limits.maxDepth, parent: p?.message.id ?? null, expires: p?.message.expires ?? Date.now() + this.limits.ttlMs }, this.limits);
   this.transaction(() => { this.hourly(sid); this.capacity(sid, 'out'); this.budget(m); this.db.prepare("INSERT INTO messages(id,direction,session,envelope,state,received) VALUES (?,'out',?,?,'queued',?)").run(mid, sid, JSON.stringify(m), Date.now()); });
   return this.get(mid);
  }
@@ -145,40 +150,44 @@ export class Store {
   ensure(!existing || machine === this.machine, 'Conflicting message ID', 409); this.rate(`receive:${machine}`);
   this.transaction(() => {
    this.hourly(m.toSession); this.capacity(m.toSession, 'in'); if (machine !== this.machine) this.budget(m);
-   const a = this.live(m.toSession); const auto = this.session(m.toSession).auto.includes(`${machine}/${m.fromSession}`);
+   const a = this.live(m.toSession); const config=this.session(m.toSession),sender=`${machine}/${m.fromSession}`;
+   const auto = config.auto.includes(sender)&&(m.mode!=='urgent'||(config.steer.includes(sender)&&a?.steering));
    this.db.prepare("INSERT INTO messages(id,direction,session,envelope,state,received,eligible) VALUES (?,'in',?,?,'pending',?,?)").run(inboxId, m.toSession, JSON.stringify(m), Date.now(), a && auto ? a.token : null);
   }); return { received: true };
  }
  inbox(sid, token, page = 0) {
   this.authorized(sid, token); ensure(Number.isInteger(page) && page >= 0 && page < 2000, 'Invalid inbox page');
   this.db.prepare("UPDATE messages SET state='expired',eligible=NULL WHERE session=? AND direction='in' AND state IN ('pending','uncertain') AND json_extract(envelope,'$.expires')<=?").run(sid,Date.now());
-  return this.db.prepare("SELECT id FROM messages WHERE session=? AND direction='in' ORDER BY CASE WHEN state='pending' AND eligible=? THEN 0 WHEN state IN ('pending','uncertain') THEN 1 ELSE 2 END,received ASC LIMIT 5 OFFSET ?").all(sid,token,page*5).map(r => this.get(r.id));
+  return this.db.prepare("SELECT id FROM messages WHERE session=? AND direction='in' ORDER BY CASE WHEN state='pending' AND eligible=? AND json_extract(envelope,'$.mode')='urgent' THEN -1 WHEN state='pending' AND eligible=? THEN 0 WHEN state IN ('pending','uncertain') THEN 1 ELSE 2 END,received ASC LIMIT 5 OFFSET ?").all(sid,token,token,page*5).map(r => this.get(r.id));
  }
- claim(sid, token, mid, manual = false) {
+ claim(sid, token, mid, manual = false, steering = false) {
   const a = this.authorized(sid, token), r = this.get(mid); ensure(r?.session === sid && r.direction === 'in', 'Unknown inbox message', 404);
   ensure(r.message.version===VERSION&&this.session(sid)?.project?.id===r.message.toProject&&this.projectAllowed(sid,r.message.fromMachine,r.message.fromProject), 'Sender project permission revoked or legacy message; retained for inspection only', 403);
   if(r.message.fromMachine===this.machine)ensure(this.localAllowed(r.message.fromSession,sid),'Sender project permission revoked',403);
   ensure(r.message.expires > Date.now(), 'Message expired', 410);
   ensure(['pending', 'uncertain'].includes(r.state), 'Already claimed', 409);
-  ensure(manual || (r.eligible === token && !a.busy && this.session(sid).auto.includes(`${r.message.fromMachine}/${r.message.fromSession}`)), 'Manual acceptance required', 403);
+  const sender=`${r.message.fromMachine}/${r.message.fromSession}`;
+  ensure(!steering||(r.message.mode==='urgent'&&r.state==='pending'&&r.eligible===token&&a.steering&&(!a.busy||a.running)&&this.session(sid).steer.includes(sender)&&this.session(sid).auto.includes(sender)), 'Steering permission required',403);
+  ensure(manual || (r.eligible === token && (!a.busy||steering) && this.session(sid).auto.includes(sender)&&(r.message.mode!=='urgent'||this.session(sid).steer.includes(sender))), 'Manual acceptance required', 403);
   const conversation=this.db.prepare('SELECT wakes FROM conversations WHERE id=?').get(r.message.conversation);
   if(conversation?.wakes>=this.limits.maxWakes){this.db.prepare('UPDATE messages SET eligible=NULL WHERE id=?').run(mid);throw Object.assign(new Error('Conversation wake budget exceeded; retained for inspection'),{status:429});}
   this.transaction(() => {
-   const processing = this.db.prepare("SELECT count(*) n FROM messages WHERE session=? AND direction='in' AND state IN ('processing','presented')").get(sid);
-   ensure(processing.n === 0, 'A peer turn is already processing', 409);
+   const processing = this.db.prepare("SELECT count(*) n FROM messages WHERE session=? AND direction='in' AND state IN ('processing','presented','consumed')").get(sid);
+   ensure(steering||processing.n === 0, 'A peer turn is already processing', 409);
    const c = this.db.prepare('SELECT * FROM conversations WHERE id=?').get(r.message.conversation);
    ensure(c && c.wakes < this.limits.maxWakes, 'Conversation wake budget exceeded', 429);
    this.db.prepare('UPDATE conversations SET wakes=wakes+1 WHERE id=?').run(c.id);
    this.db.prepare("UPDATE messages SET state='processing',eligible=NULL WHERE id=?").run(mid);
-  }); this.reservations.set(mid,{state:r.state,eligible:r.eligible});return this.get(mid);
+  }); this.reservations.set(mid,{state:r.state,eligible:r.eligible,steering});return this.get(mid);
  }
  release(sid,token,mid){
   this.authorized(sid,token);const r=this.get(mid),prior=this.reservations.get(mid);ensure(r?.session===sid&&r.state==='processing'&&prior,'Not an unpresented claim',409);
-  const allowed=this.session(sid).auto.includes(`${r.message.fromMachine}/${r.message.fromSession}`)&&this.projectAllowed(sid,r.message.fromMachine,r.message.fromProject)&&(r.message.fromMachine!==this.machine||this.localAllowed(r.message.fromSession,sid));
+  const allowed=(r.message.mode!=='urgent'||this.session(sid).steer.includes(`${r.message.fromMachine}/${r.message.fromSession}`))&&this.session(sid).auto.includes(`${r.message.fromMachine}/${r.message.fromSession}`)&&this.projectAllowed(sid,r.message.fromMachine,r.message.fromProject)&&(r.message.fromMachine!==this.machine||this.localAllowed(r.message.fromSession,sid));
   this.transaction(()=>{this.db.prepare('UPDATE messages SET state=?,eligible=? WHERE id=?').run(prior.state,allowed?prior.eligible:null,mid);this.db.prepare('UPDATE conversations SET wakes=wakes-1 WHERE id=?').run(r.message.conversation);});this.reservations.delete(mid);
  }
- settled(sid, token, mid, completed = true) { this.authorized(sid, token); const r = this.get(mid); ensure(r?.session === sid && ['processing','presented'].includes(r.state), 'Not an active peer turn', 409);this.reservations.delete(mid); this.db.prepare('UPDATE messages SET state=? WHERE id=?').run(completed ? 'handled' : 'uncertain',mid); }
- presented(sid, token, mid) { this.authorized(sid, token); const r = this.get(mid); ensure(r?.session === sid && r.state === 'processing', 'Message not processing', 409); this.reservations.delete(mid);this.db.prepare("UPDATE messages SET state='presented' WHERE id=?").run(mid); }
+ consumed(sid,token,mid){this.authorized(sid,token);const r=this.get(mid);ensure(r?.session===sid&&['processing','presented','consumed'].includes(r.state),'Not an active peer message',409);this.reservations.delete(mid);this.db.prepare("UPDATE messages SET state='consumed' WHERE id=?").run(mid);}
+ settled(sid, token, mid, completed = true) { this.authorized(sid, token); const r = this.get(mid); ensure(r?.session === sid && ['processing','presented','consumed'].includes(r.state), 'Not an active peer turn', 409);this.reservations.delete(mid); this.db.prepare('UPDATE messages SET state=? WHERE id=?').run(completed && (r.message.mode!=='urgent'||r.state==='consumed') ? 'handled' : 'uncertain',mid); }
+ presented(sid, token, mid) { this.authorized(sid, token); const r = this.get(mid); ensure(r?.session === sid && ['processing','consumed'].includes(r.state), 'Message not processing', 409); this.reservations.delete(mid);this.db.prepare("UPDATE messages SET state='presented' WHERE id=? AND state='processing'").run(mid); }
  queueSummary(){return this.db.prepare('SELECT direction,state,count(*) count FROM messages GROUP BY direction,state').all();}
  queue(sid,direction,page=0){ensure(['in','out'].includes(direction)&&Number.isInteger(page)&&page>=0,'Invalid queue query');return this.db.prepare('SELECT id FROM messages WHERE session=? AND direction=? ORDER BY received DESC LIMIT 5 OFFSET ?').all(sid,direction,page*5).map(r=>this.get(r.id));}
  queueControl(sid,operation,mid){
