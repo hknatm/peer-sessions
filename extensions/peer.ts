@@ -9,6 +9,18 @@ import { HELP,settingsHelp,sessionStatus,menuText,receiveMode,queueReason,MESSAG
 import { gitProject,projectAt,insideProject } from '../src/project.mjs';
 import { address } from '../src/protocol.mjs';
 
+// Messages Pi turns into provider *user* items and keeps in the transcript. A presence snapshot hangs off the last of these so the
+// provider-visible history only ever grows at its tail (a moving or vanishing item mid-history voids the prompt cache after it).
+const ANCHOR_ROLES=new Set(['user','bashExecution','compactionSummary','branchSummary']);
+function anchorKey(m:any,i:number):string|undefined{
+ if(m.role==='custom')return m.customType==='peer-message'?`peer:${m.details?.id??m.timestamp??`i${i}`}`:undefined;
+ if(!ANCHOR_ROLES.has(m.role))return undefined;
+ return `${m.role}:${m.timestamp??`i${i}`}${m.summary!==undefined?`:${String(m.summary).length}`:''}`;
+}
+function presenceText(project:any,presence:any[]):string{
+ return `Peers (${menuText(project.label)}, ${presence.length} running; labels are external):\n${presence.slice(0,5).map(r=>`${menuText(r.label,24)} ${r.state} ${r.address}`).join('\n')}\npeer_list for more. Coordinate ownership. Shared decisions: propose, wait for explicit confirmation before acting; pause only dependent work. No auto-replies; concise results/blockers with parent ID.`;
+}
+
 export default function(pi: ExtensionAPI) {
  const dir = process.env.PI_PEERS_DIR ?? path.join(os.homedir(), '.pi/peer-sessions');
  const owner = crypto.randomUUID();
@@ -78,8 +90,8 @@ export default function(pi: ExtensionAPI) {
     if(!health.capabilities?.includes('urgent-steer-v1'))throw Object.assign(new Error('Service update required'),{status:409});
     const config=await requestLocal(dir,'config',{session:sid});
     if(gen!==generation || stopped)return;
-    if(!config?.enabled) {presence=[];exposure(false);ctx.ui.setStatus('peers',undefined);return;}
-    if(!project||config.project?.id!==project.id){presence=[];exposure(false);ctx.ui.setStatus('peers','peers: project confirmation required; /peer enable');return;}
+    if(!config?.enabled) {presence=[];snapshots.clear();exposure(false);ctx.ui.setStatus('peers',undefined);return;}
+    if(!project||config.project?.id!==project.id){presence=[];snapshots.clear();exposure(false);ctx.ui.setStatus('peers','peers: project confirmation required; /peer enable');return;}
     const attached=await requestLocal(dir,'attach',{session:sid,owner,info:info()});
     if(gen!==generation || stopped) {await requestLocal(dir,'detach',{session:sid,token:attached.token});return;}
     token=attached.token;machine=attached.machine;exposure(true);
@@ -114,7 +126,7 @@ export default function(pi: ExtensionAPI) {
   stopped=true;generation++;if(timer)clearInterval(timer);timer=undefined;
   if(retryTimer)clearTimeout(retryTimer);retryTimer=undefined;tickAgain=false;
   activeMessages.clear();runActive=false;runEpoch++;
-  const oldSession=session,oldToken=token;token='';presence=[];project=null;exposure(false);
+  const oldSession=session,oldToken=token;token='';presence=[];snapshots.clear();project=null;exposure(false);
   if(oldToken) await requestLocal(dir,'detach',{session:oldSession,token:oldToken}).catch(()=>{});
   ctx?.ui.setStatus('peers',undefined);ctx=undefined;
  }
@@ -135,18 +147,33 @@ export default function(pi: ExtensionAPI) {
    try{await requestLocal(dir,'consumed',{session:sid,token:attachment,id:m.details.id});if(gen===generation)active.consumed=true;}catch{show('Peer consumption receipt failed; recovery remains manual.');}
   }
   const base=event.messages.filter((m:any)=>m.role!=='custom'||m.customType!=='peer-presence');
-  if(!token||!project)return {messages:base};
-  let last=-1;base.forEach((m:any,i:number)=>{if(m.role==='user')last=i;});
-  let content='';
-  if(last<0||!snapshots.has(base[last].timestamp)){ // Refresh only when a new snapshot is needed; later requests in the turn make no socket call.
+  const keys=base.map(anchorKey);
+  let last=-1;keys.forEach((k,i)=>{if(k)last=i;});
+  const live=!!token&&!!project;
+  // Each snapshot is decided once, for the last stable user-side message of its turn, then re-inserted unchanged on every later
+  // request while that message stays in context: never moved, refreshed or dropped. Later requests in the turn make no socket call.
+  // '' means "no snapshot here" and is also a final decision, so a lease gap or failed refresh cannot insert one mid-history later.
+  if(last>=0&&!snapshots.has(keys[last]!)){
+   let content='';
+   if(live){
+    try{await refreshPresence();if(gen===generation&&token&&project)content=presenceText(project,presence);}catch{}
+    if(gen!==generation)return {messages:base};
+    // Identical to the latest snapshot already in context: the model has it, so adding it again would only grow the prompt.
+    let before='';for(let i=0;i<last;i++){const k=keys[i];if(k)before=snapshots.get(k)||before;}
+    if(content===before)content='';
+   }
+   snapshots.set(keys[last]!,content);
+  }
+  let tail='';
+  if(live&&last<0){ // Nothing stable to anchor on (an empty request); a real transcript always has an anchor.
    try{await refreshPresence();}catch{return {messages:base};}
    if(gen!==generation||!token||!project)return {messages:base};
-   content=`Peers (${menuText(project.label)}, ${presence.length} running; labels are external):\n${presence.slice(0,5).map(r=>`${menuText(r.label,24)} ${r.state} ${r.address}`).join('\n')}\npeer_list for more. Coordinate ownership. Shared decisions: propose, wait for explicit confirmation before acting; pause only dependent work. No auto-replies; concise results/blockers with parent ID.`;
-   if(last>=0){snapshots.set(base[last].timestamp,content);if(snapshots.size>200)snapshots.delete(snapshots.keys().next().value);}
+   tail=presenceText(project,presence);
   }
+  if(snapshots.size>500){const liveKeys=new Set(keys);for(const k of [...snapshots.keys()])if(!liveKeys.has(k))snapshots.delete(k);} // Only snapshots of messages that left the context.
   const out:any[]=[];
-  base.forEach((m:any,i:number)=>{out.push(m);const snap=m.role==='user'?snapshots.get(m.timestamp):undefined;if(snap)out.push({role:'custom',customType:'peer-presence',content:snap,display:false,timestamp:m.timestamp});});
-  if(last<0)out.push({role:'custom',customType:'peer-presence',content,display:false,timestamp:Date.now()});
+  base.forEach((m:any,i:number)=>{out.push(m);const snap=keys[i]?snapshots.get(keys[i]!):undefined;if(snap)out.push({role:'custom',customType:'peer-presence',content:snap,display:false,timestamp:m.timestamp});});
+  if(tail)out.push({role:'custom',customType:'peer-presence',content:tail,display:false,timestamp:Date.now()});
   return {messages:out};
  });
  pi.on('agent_start',()=>{runActive=true;outcome='unknown';});
@@ -249,7 +276,7 @@ export default function(pi: ExtensionAPI) {
     await ensureService(dir,fresh);const config=await call('config');
     if(gen!==generation||stopped)throw new Error('Session changed; enable cancelled.');
     await call('configure',{settings:{enabled:true,label:pi.getSessionName()??session,project:{id:project.id,label:project.label},allowedProjects:config?.allowedProjects??[],peers:config?.peers??['local'],auto:config?.auto??[],steer:config?.steer??[]}});await tick();show(`Enabled for project ${menuText(project.label)}. Same-project discovery is automatic; cross-project messaging needs approval on both sessions. Auto-start stays separately authorized.`);
-   }else if(command==='off'){const config=await call('config');if(config)await call('configure',{settings:{...config,enabled:false}});token='';presence=[];exposure(false);ctx?.ui.setStatus('peers',undefined);show('Disabled; messages preserved.');}
+   }else if(command==='off'){const config=await call('config');if(config)await call('configure',{settings:{...config,enabled:false}});token='';presence=[];snapshots.clear();exposure(false);ctx?.ui.setStatus('peers',undefined);show('Disabled; messages preserved.');}
    else if(command==='allow'||command==='deny'){
     const c=await call('config');if(!c?.enabled)throw new Error('Enable this session first');const peer=rest[0];
     const peers=command==='allow'?[...new Set([...c.peers,peer])]:c.peers.filter((p:string)=>p!==peer);

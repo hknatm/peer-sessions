@@ -48,7 +48,7 @@ Subcommands have slash-command argument completion. `/peer help` works before se
 
 **Same project** means the canonical Git checkout root. Sessions in its subdirectories or symlink aliases match; distinct Git worktrees/checkouts do not, even with identical remotes. Non-Git sessions ask you to select/confirm a containing project root, saved on the active session branch. Project changes require a new session rather than silently transferring permissions. Session participation is still opt-in; forks do not inherit participation.
 
-Presence of running same-project sessions refreshes every 15 seconds and before model calls. The UI reports membership changes; the agent receives a fresh, bounded presence snapshot in request context, not an ever-growing persisted transcript. Presence does **not** start a turn, launch Pi or automatically delegate. Busy/closed states are lease-based, not instantaneous process detection. Agree on file ownership or separate worktrees before editing shared files.
+Presence of running same-project sessions refreshes every 15 seconds and before model calls. The UI reports membership changes; the agent receives a bounded presence snapshot in request context, not an ever-growing persisted transcript. A snapshot is taken once per turn and then stays byte-identical at its position, so the provider-visible history only grows at its end and prompt caching keeps working. Presence does **not** start a turn, launch Pi or automatically delegate. Busy/closed states are lease-based, not instantaneous process detection. Agree on file ownership or separate worktrees before editing shared files.
 
 For another project, use **Cross-project cooperation** or `/peer cooperate`:
 

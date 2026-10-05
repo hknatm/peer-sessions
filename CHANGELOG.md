@@ -3,6 +3,7 @@
 ## 0.3.0 — Unreleased
 
 - Prompt-cache fix: peer presence is snapshotted once per user turn and placed right after that user message, keeping history append-only; no presence socket call on later requests in the turn.
+- Prompt-cache fix (follow-up): the snapshot anchor now includes peer messages, compaction/branch summaries and bash output, not only `user` messages. Previously a session whose context held no `user` message (typical after compaction when work arrives as peer messages) re-appended a fresh presence item at the tail of every request, so providers with implicit cache breakpoints (GPT-5.6+, GPT-6.1) reused only the static tools/instructions prefix. A placed snapshot is never moved, refreshed, dropped on a failed refresh, or evicted while its anchor is in context; an unchanged snapshot is not repeated. Regression test: `test/cache-stability.test.mjs`.
 - Optional normal/urgent delivery and proposal/decision/blocker/result intent; plain messages remain supported. Intent is advisory, not authority or approval.
 - Separate exact-sender recipient steering permission requires auto-start first; old backlog is never promoted. Urgent injection only during active runs or idle, never hard aborts or session launch.
 - Multiple peer messages can share a run; track context consumption separately and mark unconsumed/interrupted urgent work uncertain. No automatic receipts-as-agreement or reply loops.
