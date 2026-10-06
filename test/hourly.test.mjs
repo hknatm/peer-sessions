@@ -9,18 +9,18 @@ import {startService} from '../src/service.mjs';
 const uid=()=>crypto.randomUUID();
 function setup(s){for(const id of ['a','b','c'])s.configure(id,{enabled:true,project:{id:'p',label:'P'},peers:['local'],auto:['host/a','host/b']});return Object.fromEntries(['a','b','c'].map(id=>[id,s.attach(id,id).token]));}
 function send(s,t,from='a',to='b'){return s.send(from,t[from],{to:`host/${to}`,toProject:'p',body:'brief result',requestId:uid()});}
-test('40/hour per session across peers/directions, dedup, cancellation, rolling boundary and restart',()=>{
- const dir=fs.mkdtempSync(path.join(os.tmpdir(),'peer-hour-')),file=path.join(dir,'db');let s=new Store(file,'host');let t=setup(s);
+test('80/hour per session across peers/directions, dedup, cancellation, rolling boundary and restart',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'peer-hour-')),file=path.join(dir,'db'),limits={ratePerMinute:100};let s=new Store(file,'host',limits);let t=setup(s);
  try{
-  for(let i=0;i<20;i++){const a=send(s,t);s.receive(a.message,'host');const b=send(s,t,'b','a');s.receive(b.message,'host');}
-  assert.deepEqual(s.usage('a').remaining,0);assert.equal(s.usage('b').used,40);assert.equal(s.usage('c').used,0);
+  for(let i=0;i<40;i++){const a=send(s,t);s.receive(a.message,'host');const b=send(s,t,'b','a');s.receive(b.message,'host');}
+  assert.deepEqual(s.usage('a').remaining,0);assert.equal(s.usage('b').used,80);assert.equal(s.usage('c').used,0);
   const first=s.db.prepare("SELECT id FROM messages WHERE session='a' AND direction='out' ORDER BY received LIMIT 1").get();const row=s.get(first.id);
-  assert.equal(s.send('a',t.a,{to:'host/b',toProject:'p',body:row.message.body,requestId:row.id}).id,row.id);s.receive(row.message,'host');assert.equal(s.usage('a').used,40);
-  s.queueControl('a','cancel',row.id);assert.equal(s.usage('a').used,40);assert.throws(()=>send(s,t,'a','c'),/allowance exhausted/);
+  assert.equal(s.send('a',t.a,{to:'host/b',toProject:'p',body:row.message.body,requestId:row.id}).id,row.id);s.receive(row.message,'host');assert.equal(s.usage('a').used,80);
+  s.queueControl('a','cancel',row.id);assert.equal(s.usage('a').used,80);assert.throws(()=>send(s,t,'a','c'),/allowance exhausted/);
   const incoming=send(s,t,'c','a');assert.throws(()=>s.receive(incoming.message,'host'),/allowance exhausted/);assert.equal(s.usage('c').used,1);
-  s.close();s=new Store(file,'host');t=setup(s);assert.equal(s.usage('a').used,40);assert.throws(()=>send(s,t,'a','c'),/allowance exhausted/);
+  s.close();s=new Store(file,'host',limits);t=setup(s);assert.equal(s.usage('a').used,80);assert.throws(()=>send(s,t,'a','c'),/allowance exhausted/);
   const now=Date.now();s.db.prepare("UPDATE messages SET received=? WHERE id=?").run(now-3600000,row.id);
-  assert.equal(s.usage('a',now).used,39);s.receive(incoming.message,'host');assert.equal(s.usage('a').used,40);
+  assert.equal(s.usage('a',now).used,79);s.receive(incoming.message,'host');assert.equal(s.usage('a').used,80);
  }finally{s.close();fs.rmSync(dir,{recursive:true,force:true});}
 });
 test('recipient hourly limit retains sender queue and retries after capacity frees',async()=>{

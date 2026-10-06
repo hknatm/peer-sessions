@@ -2,6 +2,7 @@
 
 ## 0.3.0 — Unreleased
 
+- Raise the default per-session rolling-hour allowance from 40 to 80 total incoming + outgoing messages across all peers; each participating session enforces its own shared allowance.
 - Add a confirmed Sessions → Forget closed session action for disconnected local remnants. It removes peer discovery/permissions and cancels pending sends owned by the forgotten session while retaining message records and the separate Pi transcript; connected, current and remote sessions are protected.
 - Prompt-cache fix: peer presence is snapshotted once per user turn and placed right after that user message, keeping history append-only; no presence socket call on later requests in the turn.
 - Prompt-cache fix (follow-up): the snapshot anchor now includes peer messages, compaction/branch summaries and bash output, not only `user` messages. Previously a session whose context held no `user` message (typical after compaction when work arrives as peer messages) re-appended a fresh presence item at the tail of every request, so providers with implicit cache breakpoints (GPT-5.6+, GPT-6.1) reused only the static tools/instructions prefix. A placed snapshot is never moved, refreshed, dropped on a failed refresh, or evicted while its anchor is in context; an unchanged snapshot is not repeated. Regression test: `test/cache-stability.test.mjs`.
@@ -15,7 +16,7 @@
 
 ## 0.2.1 — Main-branch update
 
-- Durable 40-message rolling-hour allowance per session across incoming/outgoing traffic and all peers. Deduplicated retries and acceptance are free; receiving limits preserve sender queues for retry.
+- Durable 40-message rolling-hour allowance per session across incoming/outgoing traffic and all peers (raised to 80 in 0.3.0). Deduplicated retries and acceptance are free; receiving limits preserve sender queues for retry.
 - Default related-chain depth/message/wake ceilings raised to 40; separate 24-hour deadline retained. This is not a token budget.
 - Serialize acceptance, recheck readiness after claim, safely release unpresented claims, defer auto-draining past settlement and retain eligibility on message-local claim refusals. Exhausted conversation wakes no longer starve other eligible mail.
 - Show hourly usage, directional receive auto/review and busy/backlog rules in the CLI picker/status/help.

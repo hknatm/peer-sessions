@@ -48,8 +48,8 @@ test('command discovery, unknown command error, readable status and no self-targ
   await f.command('status');assert.ok(f.notices.some(([text])=>text.includes('enabled · attached')&&text.includes('LAN listener: off')));
   await f.command('', ['Sessions']);assert.ok(f.notices.some(([text])=>text.includes('No other permitted sessions')));
   assert.ok(f.screens[0].options.includes('Status'));
-  assert.ok(f.notices.some(([text])=>text.includes('0/40 in rolling hour')));
-  assert.ok(f.screens[0].title.includes('0/40/h'));
+  assert.ok(f.notices.some(([text])=>text.includes('0/80 in rolling hour')));
+  assert.ok(f.screens[0].title.includes('0/80/h'));
  });
 });
 

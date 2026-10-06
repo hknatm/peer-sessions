@@ -37,7 +37,7 @@ export const HELP: Record<string,string> = {
   'Keep urgent corrections short and actionable. No inferred urgency, automatic acknowledgement/reply, abort or negotiation loop. Steering shares the existing message and conversation budgets.'
  ].join('\n\n'),
  'Message allowance & costs': [
-  'Each session shares 40 new incoming + outgoing messages per rolling hour across all peers. Retries/duplicates and acceptance do not count again. Counters survive restarts; cancelled records still count until their hour expires.',
+  'Each session shares 80 new incoming + outgoing messages per rolling hour across all peers. Retries/duplicates and acceptance do not count again. Counters survive restarts; cancelled records still count until their hour expires.',
   'At the receive limit, the sender keeps the message queued and retries. At the send limit, a new send fails visibly; retry after the time shown in Status. No messages are silently dropped.',
   'Related conversations also have default depth/message/turn ceilings of 40 and a 24-hour deadline. These are separate from the rolling-hour allowance, not lifetime session limits.',
   'One message can cause many model/tool calls: this is a traffic allowance, not a token/cost cap. Auto-start is exact-sender permission, not auto-reply. Send short requests/results/blockers, not transcripts.'
