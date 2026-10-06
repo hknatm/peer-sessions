@@ -223,7 +223,8 @@ export default function(pi: ExtensionAPI) {
    const selected=await fresh.ui.select('Sessions — receive mode applies HERE, from this sender',labels);if(!selected)return;
    const target=rows[labels.indexOf(selected)];if(target.state==='unreachable'){show('Machine unreachable; existing queues remain safe.');return;}
    const automatic=config.auto.includes(target.address),steering=config.steer?.includes(target.address);
-   const action=await fresh.ui.select(`${menuText(target.label??target.address,24)} — receive here: ${receiveMode(config,target.address)}`,['Send message','Send urgent message',automatic?'Disable auto-start from this session':'Allow auto-start from this session',...(automatic?[steering?'Disable urgent steering from this session':'Allow urgent steering from this session']:[]),'Delivery & permission help','Details','Back']);
+   const localClosed=target.state==='session-closed'&&target.address.startsWith(`${machine}/`);
+   const action=await fresh.ui.select(`${menuText(target.label??target.address,24)} — receive here: ${receiveMode(config,target.address)}`,['Send message','Send urgent message',automatic?'Disable auto-start from this session':'Allow auto-start from this session',...(automatic?[steering?'Disable urgent steering from this session':'Allow urgent steering from this session']:[]),...(localClosed?['Forget closed session']:[]),'Delivery & permission help','Details','Back']);
    if(action==='Send message'||action==='Send urgent message'){
     const urgent=action==='Send urgent message';
     if(urgent&&!await fresh.ui.confirm('Send an urgent update?', 'The recipient must authorize YOU for urgent steering. Your receive settings only control messages coming here. Without its permission this stays manual; steering cannot stop a running tool or undo actions.'))return;
@@ -231,6 +232,12 @@ export default function(pi: ExtensionAPI) {
     const kind=intent.split(' — ')[0].toLowerCase();
     const body=await fresh.ui.editor(`${urgent?'Urgent':'Normal'} to ${menuText(target.label??target.address)} — recipient controls processing`,'');
     if(body?.trim()){if(menuGeneration!==generation||menuSession!==session||stopped)throw new Error('Session changed; send cancelled.');const row=await call('send',{to:target.address,body,mode:urgent?'urgent':'normal',...(kind!=='plain'?{kind}:{}),requestId:crypto.randomUUID()});show(`Message queued (${row.id}); stored receipt is not agreement or completed work.`);}
+   }
+   else if(action==='Forget closed session'){
+    if(!await fresh.ui.confirm('Forget this closed peer session?',`Remove ${menuText(target.label??target.address)} from peer discovery and clear its peer permissions. Pending sends owned by it will be cancelled; stored message records and its Pi transcript are retained. Reopening the transcript can enable it again.`))return;
+    if(menuGeneration!==generation||menuSession!==session||stopped)throw new Error('Session changed; forget cancelled.');
+    const result=await call('forget-session',{target:target.address.split('/')[1]});
+    show(`Closed session forgotten.${result.cancelled?` ${result.cancelled} pending send${result.cancelled===1?'':'s'} cancelled.`:''} Stored message records and the Pi transcript were retained.`);
    }
    else if(action==='Delivery & permission help')show('Receive mode applies HERE: manual review requires acceptance; auto when idle allows new normal messages to start here; auto + urgent also lets authorized urgent messages enter active work. Your outgoing messages follow the OTHER session’s permissions. Enable auto-start first, then urgent steering. Earlier backlog stays manual. Disabling auto-start also removes steering.');
    else if(action==='Details')show(`Address: ${target.address}\nState: ${target.state}\nIncoming auto-start: ${automatic?'on':'off'}\nReceive auto = new messages from this sender start here when idle; busy messages wait. Receive review = manual acceptance. Earlier backlog, reconnects and uncertain turns still require review. Urgent steering from this sender: ${steering?'on':'off'} (separate permission; never a hard abort). Replies must be explicit. The recipient controls your outgoing messages.`);

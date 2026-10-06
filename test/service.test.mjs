@@ -62,6 +62,18 @@ test('real mutual TLS: delivery, offline sender queue, receiver restart, revocat
   assert.equal((await rawRequest(sb.address.port,{version:2,action:'list'},{'x-peer-machine':'a',authorization:`Bearer ${secret}`},cert,key)).status,403);
  }finally{await sa?.close();await sb?.close();fs.rmSync(root,{recursive:true,force:true});}
 });
+test('local forget endpoint requires the caller attachment and protects connected sessions',async()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'ps-forget-'));const config={version:1,machine:'solo',peers:{},listen:null};let s;
+ try{
+  s=await startService(dir,{config,interval:60000});
+  s.store.configure('current',{enabled:true,project:{id:'p',label:'Project'},peers:['local']});s.store.configure('old',{enabled:true,project:{id:'p',label:'Project'},peers:['local']});
+  const token=(await requestLocal(dir,'attach',{session:'current',owner:'current'})).token;
+  await assert.rejects(requestLocal(dir,'forget-session',{session:'current',token:'wrong',target:'old'}),/expired or disabled/);
+  const oldToken=(await requestLocal(dir,'attach',{session:'old',owner:'old'})).token;
+  await assert.rejects(requestLocal(dir,'forget-session',{session:'current',token,target:'old'}),/connected/);
+  await requestLocal(dir,'detach',{session:'old',token:oldToken});assert.equal((await requestLocal(dir,'forget-session',{session:'current',token,target:'old'})).forgotten,true);assert.equal(s.store.session('old'),undefined);
+ }finally{await s?.close();fs.rmSync(dir,{recursive:true,force:true});}
+});
 test('private local socket ownership and duplicate service protection',async()=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'ps-sock-'));const config={version:1,machine:'solo',peers:{},listen:null};let s;
  try{s=await startService(dir,{config,interval:60000});assert.equal(fs.statSync(path.join(dir,'service.sock')).mode&0o777,0o600);await assert.rejects(startService(dir,{config}),/already running/);assert.equal((await requestLocal(dir,'health')).machine,'solo');

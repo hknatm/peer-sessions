@@ -79,6 +79,7 @@ export async function startService(dir, { config = readConfig(dir), interval = 1
    case 'pair-cancel': pairing.cancel();return {cancelled:true};
    case 'queue': store.authorized(session,token);return store.queue(session,body.direction??'out',body.page??0).map(r=>publicRow(r));
    case 'queue-control': store.authorized(session,token);return store.queueControl(session,body.operation,body.id);
+   case 'forget-session': store.authorized(session,token);return store.forgetSession(session,body.target);
    case 'revoke-peer': {const next=readConfig(dir);id(body.machine);delete next.peers[body.machine];const {saveConfig}=await import('./config.mjs');saveConfig(dir,next);return local({action:'reload-trust'});}
    case 'health': return {capabilities:['project-scope-v2','session-hourly-v1','urgent-steer-v1'],runtime:path.join(path.dirname(fileURLToPath(import.meta.url)),'cli.mjs'), version: VERSION, machine: config.machine, label:config.label??config.machine, paired: Object.entries(peers).map(([machine,p])=>({machine,label:p.label??machine})), lan: !!config.listen, limits: store.limits, queue:store.queueSummary() };
    case 'usage': store.authorized(session,token);return store.usage(session);

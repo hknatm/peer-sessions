@@ -24,6 +24,30 @@ test('opt-in, exclusive leases, revocation, new identities',()=>{
  assert.equal(f.s.listing('remote',{session:'x',project:{id:'rp',label:'Remote'}}).length,1);
  }finally{f.close();}
 });
+test('forget closed local session removes discovery and permissions but retains message records',()=>{
+ const f=fixture();try{
+  const requestId=uid(),out=f.s.send('b',f.b,{to:'host/a',toProject:'p',body:'pending',requestId});
+  const delivered=f.s.send('a',f.a,{to:'host/b',toProject:'p',body:'retained',requestId:uid()});f.s.receive(delivered.message,'host');
+  const received=remote();f.s.receive(received,'remote');
+  assert.throws(()=>f.s.forgetSession('a','a'),/current session/);
+  assert.throws(()=>f.s.forgetSession('a','b'),/connected/);
+  f.s.detach('b',f.b);f.s.inFlight.add(out.id);assert.throws(()=>f.s.forgetSession('a','b'),/in-flight/);f.s.inFlight.delete(out.id);
+  const result=f.s.forgetSession('a','b');assert.deepEqual(result,{forgotten:true,session:'b',cancelled:1});assert.equal(f.s.get(out.id).state,'cancelled');
+  assert.equal(f.s.session('b'),undefined);assert.deepEqual(f.s.listing('host',{session:'a',project:{id:'p',label:'Project'}}),[]);
+  assert.equal(f.s.get(received.id).message.body,'message');assert.equal(f.s.get(`local_${delivered.id}`).message.body,'retained');
+  assert.throws(()=>f.s.forgetSession('a','b'),/unknown or already forgotten/);
+  f.s.configure('b',{enabled:true,project:{id:'p',label:'Project'},peers:['local']});assert.equal(f.s.session('b').enabled,1);
+ }finally{f.close();}
+});
+test('forget closed session clears sender permissions and cancels its pending sends',()=>{
+ const f=fixture();try{
+  f.s.configure('a',{enabled:true,project:{id:'p',label:'Project'},allowedProjects:['remote/rp'],peers:['local','remote'],auto:['host/b'],steer:['host/b']});
+  const queued=f.s.send('b',f.b,{to:'host/a',toProject:'p',body:'queued',requestId:uid()});
+  f.s.queueControl('b','pause');f.s.detach('b',f.b);
+  const result=f.s.forgetSession('a','b');assert.equal(result.cancelled,1);assert.equal(f.s.get(queued.id).state,'cancelled');assert.equal(f.s.get(queued.id).error,'Sender session forgotten');
+  assert.deepEqual(f.s.session('a').auto,[]);assert.deepEqual(f.s.session('a').steer,[]);
+ }finally{f.close();}
+});
 test('durable deduplication and conflicting duplicates',()=>{
  const f=fixture();try{const m=remote();f.s.receive(m,'remote');f.s.receive(m,'remote');assert.equal(f.s.inbox('b',f.b).length,1);
  f.s.claim('b',f.b,m.id);f.s.presented('b',f.b,m.id);f.s.settled('b',f.b,m.id,false);assert.equal(f.s.get(m.id).state,'uncertain');

@@ -100,6 +100,32 @@ export class Store {
   const s=this.session(sid);return !!(s?.enabled&&s.project&&this.permitted(sid,machine)&&((machine===this.machine&&s.project.id===project)||s.allowedProjects.includes(projectRef(machine,project))));
  }
  localAllowed(from,to){const a=this.session(from),b=this.session(to);return !!(a?.project&&b?.project&&this.projectAllowed(from,this.machine,b.project.id)&&this.projectAllowed(to,this.machine,a.project.id));}
+ forgetSession(requester,target){
+  id(requester);id(target);ensure(requester!==target,'Cannot forget the current session',409);
+  ensure(this.session(requester)?.enabled,'Requesting session is not enabled',403);
+  ensure(this.session(target)?.enabled,'Session is unknown or already forgotten',404);
+  ensure(this.localAllowed(requester,target),'Target session is not permitted',403);
+  ensure(!this.live(target),'Session is connected; close it before forgetting',409);
+  ensure(![...this.inFlight].some(mid=>this.get(mid)?.session===target),'Session has an in-flight send; try again after delivery settles',409);
+  const sender=`${this.machine}/${target}`;let cancelled=0;
+  this.transaction(()=>{
+   for(const row of this.db.prepare('SELECT id,auto FROM sessions').all()){
+    const auto=JSON.parse(row.auto).filter(value=>value!==sender);
+    this.db.prepare('UPDATE sessions SET auto=? WHERE id=?').run(JSON.stringify(auto),row.id);
+   }
+   for(const row of this.db.prepare('SELECT session,senders FROM steering_permissions').all()){
+    const steer=JSON.parse(row.senders).filter(value=>value!==sender);
+    this.db.prepare('UPDATE steering_permissions SET senders=? WHERE session=?').run(JSON.stringify(steer),row.session);
+   }
+   cancelled=this.db.prepare("UPDATE messages SET state='cancelled',eligible=NULL,error='Sender session forgotten',next=0 WHERE session=? AND direction='out' AND state IN ('queued','paused')").run(target).changes;
+   this.db.prepare("UPDATE messages SET eligible=NULL WHERE direction='in' AND (session=? OR (json_extract(envelope,'$.fromMachine')=? AND json_extract(envelope,'$.fromSession')=?))").run(target,this.machine,target);
+   this.db.prepare('DELETE FROM steering_permissions WHERE session=?').run(target);
+   this.db.prepare('DELETE FROM project_sessions WHERE session=?').run(target);
+   this.db.prepare('DELETE FROM sessions WHERE id=?').run(target);
+  });
+  for(const [mid,prior]of this.reservations){const row=this.get(mid);if(row?.session===target||(row?.message.fromMachine===this.machine&&row?.message.fromSession===target))prior.eligible=null;}
+  return {forgotten:true,session:target,cancelled};
+ }
  listing(machine,requester) {
   ensure(requester?.project&&requester?.session,'Requester project required');validateProject(requester.project);id(requester.session);
   if(machine===this.machine){const s=this.session(requester.session);ensure(s?.enabled&&s.project?.id===requester.project.id,'Requester mismatch',403);}

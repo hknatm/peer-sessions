@@ -25,6 +25,7 @@ export const HELP: Record<string,string> = {
   'Machine permission controls which paired machines this session may discover/message and receive from. Both ends must permit each other.',
   'Auto-start permits one exact sending session to start model calls and agent work while this recipient is running and idle, using its own model and tools. It is not a sandbox.',
   'New authorized messages wait while busy and start one at a time when idle (poll fallback within 15 seconds). No first-message acceptance is needed. Earlier backlog, service restart/reattachment and uncertain/interrupted turns require manual acceptance. An uncertain turn may already have performed work; inspect it before retrying.',
+  'A disconnected local session can be removed from peer discovery through Sessions → Forget closed session. This clears its peer permissions and cancels pending sends it owns, but retains message records and its separate Pi transcript. Connected, current and remote sessions cannot be forgotten there.',
   'Revoking a paired machine affects ALL sessions on this host. Stopping the service disconnects all sessions. Neither operation deletes queues.'
  ].join('\n\n'),
  'Urgent steering & decisions': [
