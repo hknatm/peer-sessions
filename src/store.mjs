@@ -134,20 +134,31 @@ export class Store {
   return { address: `${this.machine}/${s.id}`, label: row.label, state: a ? a.busy ? 'busy' : 'ready' : 'session-closed', project:row.project, receive: 'store; auto-start per sender', ...(machine === this.machine ? { model: a?.model, thinking: a?.thinking } : {}) };
  }); }
  rate(key) { const now = Date.now(); const r = this.rates.get(key); if (!r || now - r.at >= 60000) this.rates.set(key, { at: now, count: 1 }); else ensure(++r.count <= this.limits.ratePerMinute, 'Rate limit', 429); }
+ limit(message,code,details){throw Object.assign(new Error(message),{status:429,code,details});}
  usage(sid, now = Date.now()) {
-  id(sid);const row=this.db.prepare("SELECT count(*) used FROM messages WHERE session=? AND received>? AND json_extract(envelope,'$.version')=2").get(sid,now-3600000);
-  const next=row.used>=this.limits.messagesPerHour?this.db.prepare("SELECT received FROM messages WHERE session=? AND received>? AND json_extract(envelope,'$.version')=2 ORDER BY received LIMIT 1 OFFSET ?").get(sid,now-3600000,row.used-this.limits.messagesPerHour).received+3600000:null;
-  return {used:row.used,limit:this.limits.messagesPerHour,remaining:Math.max(0,this.limits.messagesPerHour-row.used),nextAvailable:next};
+  id(sid);const cutoff=now-3600000,row=this.db.prepare("SELECT count(*) used,count(CASE WHEN direction='in' THEN 1 END) incoming,count(CASE WHEN direction='out' THEN 1 END) outgoing FROM messages WHERE session=? AND received>? AND json_extract(envelope,'$.version')=2").get(sid,cutoff);
+  const slot=row.used>=this.limits.messagesPerHour?this.db.prepare("SELECT received FROM messages WHERE session=? AND received>? AND json_extract(envelope,'$.version')=2 ORDER BY received LIMIT 1 OFFSET ?").get(sid,cutoff,row.used-this.limits.messagesPerHour):null;
+  return {used:row.used,incoming:row.incoming,outgoing:row.outgoing,limit:this.limits.messagesPerHour,remaining:Math.max(0,this.limits.messagesPerHour-row.used),nextAvailable:slot?slot.received+3600000:null};
  }
- hourly(sid) {const usage=this.usage(sid);ensure(usage.remaining>0,`Session message allowance exhausted (${usage.used}/${usage.limit} per rolling hour); retry after ${new Date(usage.nextAvailable).toISOString()}`,429);}
+ quota(sid,parent,now=Date.now()){
+  const hourly=this.usage(sid,now);if(parent===undefined)return {hourly};
+  const p=this.get(parent);ensure(p&&p.session===sid&&p.direction==='in','Unknown incoming parent',404);
+  const c=this.db.prepare('SELECT * FROM conversations WHERE id=?').get(p.message.conversation);ensure(c,'Conversation accounting unavailable',409);
+  const depthLimit=Math.min(p.message.maxDepth,this.limits.maxDepth),nextDepth=p.message.depth+1;
+  const conversation={id:c.id,expiresAt:c.expires,messages:{used:c.messages,limit:this.limits.maxMessages,remaining:Math.max(0,this.limits.maxMessages-c.messages)},wakes:{used:c.wakes,limit:this.limits.maxWakes,remaining:Math.max(0,this.limits.maxWakes-c.wakes)},depth:{current:p.message.depth,next:nextDepth,limit:depthLimit,remaining:Math.max(0,depthLimit-p.message.depth)}};
+  const blockedBy=[];if(hourly.remaining===0)blockedBy.push('session_hourly_limit');if(conversation.messages.remaining===0)blockedBy.push('conversation_message_limit');if(nextDepth>depthLimit)blockedBy.push('conversation_depth_limit');if(c.expires<=now)blockedBy.push('conversation_expired');
+  const processingBlocked=[];if(conversation.wakes.remaining===0)processingBlocked.push('conversation_wake_limit');if(c.expires<=now)processingBlocked.push('conversation_expired');
+  return {hourly,conversation,reply:{allowed:blockedBy.length===0,blockedBy},processing:{allowed:processingBlocked.length===0,blockedBy:processingBlocked}};
+ }
+ hourly(sid) {const usage=this.usage(sid);if(!usage.remaining)this.limit(`Session rolling-hour message allowance exhausted (${usage.used}/${usage.limit}; incoming ${usage.incoming}, outgoing ${usage.outgoing}); retry after ${new Date(usage.nextAvailable).toISOString()}`,'session_hourly_limit',{hourly:usage});}
  capacity(sid, direction) {
   ensure(this.db.prepare('SELECT count(*) n FROM messages').get().n < this.limits.maxRows, 'Storage row limit; explicit archive required', 507);
   ensure(this.db.prepare("SELECT count(*) n FROM messages WHERE session=? AND direction=? AND state NOT IN ('received','handled','expired','rejected','replied','cancelled')").get(sid, direction).n < this.limits.mailboxRows, 'Mailbox full', 507);
  }
- budget(m) {
+ budget(sid,m) {
   const old = this.db.prepare('SELECT * FROM conversations WHERE id=?').get(m.conversation);
   ensure(!old || old.expires === m.expires, 'Conversation deadline cannot change', 409);
-  ensure(!old || old.messages < this.limits.maxMessages, 'Conversation message limit', 429);
+  if(old&&old.messages>=this.limits.maxMessages){const hourly=this.usage(sid);this.limit(`Conversation message allowance exhausted (${old.messages}/${this.limits.maxMessages}); separate session rolling-hour usage is ${hourly.used}/${hourly.limit}`,'conversation_message_limit',{conversation:{id:old.id,messages:old.messages,limit:this.limits.maxMessages,expiresAt:old.expires},hourly});}
   this.db.prepare('INSERT INTO conversations VALUES (?,?,1,0) ON CONFLICT(id) DO UPDATE SET messages=messages+1').run(m.conversation, m.expires);
  }
  get(mid) { const r = this.db.prepare('SELECT * FROM messages WHERE id=?').get(id(mid)); return r && { ...r, message: JSON.parse(r.envelope) }; }
@@ -159,9 +170,9 @@ export class Store {
   const mid = id(requestId); const existing = this.get(mid);
   if (existing) { ensure(existing.direction === 'out' && existing.session === sid && (existing.message.mode??'normal')===mode&&existing.message.kind===kind&&existing.message.body === body && existing.message.toMachine === target.machine && existing.message.toSession === target.session && existing.message.toProject===toProject && existing.message.parent === (parent ? this.get(parent)?.message.id : null), 'Conflicting message ID', 409); return existing; }
   this.rate(`send:${sid}`);
-  let p; if (parent) { p = this.get(parent); ensure(p && p.session === sid && p.direction === 'in', 'Unknown incoming parent'); }
+  let p; if (parent) { p = this.get(parent); ensure(p && p.session === sid && p.direction === 'in', 'Unknown incoming parent');const hourly=this.usage(sid),depthLimit=Math.min(p.message.maxDepth,this.limits.maxDepth);if(p.message.expires<=Date.now())this.limit(`Conversation expired at ${new Date(p.message.expires).toISOString()}; separate session rolling-hour usage is ${hourly.used}/${hourly.limit}`,'conversation_expired',{conversation:{id:p.message.conversation,expiresAt:p.message.expires},hourly});if(p.message.depth>=depthLimit)this.limit(`Conversation chain depth exhausted (${p.message.depth}/${depthLimit}); separate session rolling-hour usage is ${hourly.used}/${hourly.limit}`,'conversation_depth_limit',{conversation:{id:p.message.conversation,depth:p.message.depth,limit:depthLimit,expiresAt:p.message.expires},hourly}); }
   const m = validateMessage({ version: VERSION, id: mid, conversation: p?.message.conversation ?? crypto.randomUUID(), fromMachine: this.machine, fromSession: sid, toMachine: target.machine, toSession: target.session, fromProject:source.project.id,toProject, body, mode, ...(kind!==undefined?{kind}:{}), depth: p ? p.message.depth + 1 : 1, maxDepth: p?.message.maxDepth ?? this.limits.maxDepth, parent: p?.message.id ?? null, expires: p?.message.expires ?? Date.now() + this.limits.ttlMs }, this.limits);
-  this.transaction(() => { this.hourly(sid); this.capacity(sid, 'out'); this.budget(m); this.db.prepare("INSERT INTO messages(id,direction,session,envelope,state,received) VALUES (?,'out',?,?,'queued',?)").run(mid, sid, JSON.stringify(m), Date.now()); });
+  this.transaction(() => { this.hourly(sid); this.capacity(sid, 'out'); this.budget(sid,m); this.db.prepare("INSERT INTO messages(id,direction,session,envelope,state,received) VALUES (?,'out',?,?,'queued',?)").run(mid, sid, JSON.stringify(m), Date.now()); });
   return this.get(mid);
  }
  receive(m, machine) {
@@ -175,7 +186,7 @@ export class Store {
   if (duplicate?.direction === 'in') { ensure(duplicate.envelope === JSON.stringify(m), 'Conflicting duplicate', 409); return { received: true }; }
   ensure(!existing || machine === this.machine, 'Conflicting message ID', 409); this.rate(`receive:${machine}`);
   this.transaction(() => {
-   this.hourly(m.toSession); this.capacity(m.toSession, 'in'); if (machine !== this.machine) this.budget(m);
+   this.hourly(m.toSession); this.capacity(m.toSession, 'in'); if (machine !== this.machine) this.budget(m.toSession,m);
    const a = this.live(m.toSession); const config=this.session(m.toSession),sender=`${machine}/${m.fromSession}`;
    const auto = config.auto.includes(sender)&&(m.mode!=='urgent'||(config.steer.includes(sender)&&a?.steering));
    this.db.prepare("INSERT INTO messages(id,direction,session,envelope,state,received,eligible) VALUES (?,'in',?,?,'pending',?,?)").run(inboxId, m.toSession, JSON.stringify(m), Date.now(), a && auto ? a.token : null);
@@ -195,8 +206,8 @@ export class Store {
   const sender=`${r.message.fromMachine}/${r.message.fromSession}`;
   ensure(!steering||(r.message.mode==='urgent'&&r.state==='pending'&&r.eligible===token&&a.steering&&(!a.busy||a.running)&&this.session(sid).steer.includes(sender)&&this.session(sid).auto.includes(sender)), 'Steering permission required',403);
   ensure(manual || (r.eligible === token && (!a.busy||steering) && this.session(sid).auto.includes(sender)&&(r.message.mode!=='urgent'||this.session(sid).steer.includes(sender))), 'Manual acceptance required', 403);
-  const conversation=this.db.prepare('SELECT wakes FROM conversations WHERE id=?').get(r.message.conversation);
-  if(conversation?.wakes>=this.limits.maxWakes){this.db.prepare('UPDATE messages SET eligible=NULL WHERE id=?').run(mid);throw Object.assign(new Error('Conversation wake budget exceeded; retained for inspection'),{status:429});}
+  const conversation=this.db.prepare('SELECT * FROM conversations WHERE id=?').get(r.message.conversation);
+  if(conversation?.wakes>=this.limits.maxWakes){this.db.prepare('UPDATE messages SET eligible=NULL WHERE id=?').run(mid);const hourly=this.usage(sid);this.limit(`Conversation wake allowance exhausted (${conversation.wakes}/${this.limits.maxWakes}); retained for inspection; separate session rolling-hour usage is ${hourly.used}/${hourly.limit}`,'conversation_wake_limit',{conversation:{id:conversation.id,wakes:conversation.wakes,limit:this.limits.maxWakes,expiresAt:conversation.expires},hourly});}
   this.transaction(() => {
    const processing = this.db.prepare("SELECT count(*) n FROM messages WHERE session=? AND direction='in' AND state IN ('processing','presented','consumed')").get(sid);
    ensure(steering||processing.n === 0, 'A peer turn is already processing', 409);

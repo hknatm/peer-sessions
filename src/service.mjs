@@ -45,16 +45,22 @@ export async function startService(dir, { config = readConfig(dir), interval = 1
  async function flush() {
   if (flushing || closing) return; flushing = true;
   try {
-   for (const r of store.outbox()) {
-    const m = r.message;
-    if (m.expires <= Date.now()) { store.delivery(r.id, 'expired'); continue; }
-    if (m.version!==VERSION||!store.projectAllowed(r.session,m.toMachine,m.toProject)) { store.delivery(r.id, 'rejected', 'Sender permission revoked'); continue; }
+   for (const pending of store.outbox()) {
+    // The batch can become stale while an earlier network delivery awaits. Re-read and reserve each row synchronously so
+    // cancellation/forgetting either wins before transmission or sees an in-flight send and refuses.
+    const r=store.get(pending.id);if(r?.state!=='queued'||r.next>Date.now())continue;
+    store.inFlight.add(r.id);
     try {
-     store.inFlight.add(r.id);
+     const m = r.message;
+     if (m.expires <= Date.now()) { store.delivery(r.id, 'expired'); continue; }
+     if (m.version!==VERSION||!store.projectAllowed(r.session,m.toMachine,m.toProject)) { store.delivery(r.id, 'rejected', 'Sender permission revoked'); continue; }
      if(m.mode==='urgent'&&m.toMachine!==config.machine){const features=await peerRequest(m.toMachine,'capabilities');ensure(features.capabilities?.includes('urgent-steer-v1'),'Recipient service does not support urgent delivery',409);}
      const ack = m.toMachine === config.machine ? store.receive(m, config.machine) : await peerRequest(m.toMachine, 'receive', { message: m });
      ensure(ack.received === true, 'Invalid receipt', 409); store.delivery(r.id, 'received');
-    } catch (e) { store.delivery(r.id, [400,403,409,410].includes(e.status) ? 'rejected' : 'queued', e.status===429?'Recipient rate limited; queued for retry':e.status ? `Remote rejection ${e.status}` : 'Peer unreachable or TLS/auth failure'); }
+    } catch (e) {
+     const permanent=[400,403,409,410].includes(e.status)||['conversation_message_limit','conversation_depth_limit','conversation_expired'].includes(e.peerCode??e.code);
+     store.delivery(r.id,permanent?'rejected':'queued',permanent?`${e.peerCode??e.code??`remote_${e.status}`}: ${e.message}`:e.status===429?'Recipient rate limited; queued for retry':e.status?`Remote rejection ${e.status}`:'Peer unreachable or TLS/auth failure');
+    }
     finally {store.inFlight.delete(r.id);}
    }
   } finally { flushing = false; }
@@ -81,8 +87,9 @@ export async function startService(dir, { config = readConfig(dir), interval = 1
    case 'queue-control': store.authorized(session,token);return store.queueControl(session,body.operation,body.id);
    case 'forget-session': store.authorized(session,token);return store.forgetSession(session,body.target);
    case 'revoke-peer': {const next=readConfig(dir);id(body.machine);delete next.peers[body.machine];const {saveConfig}=await import('./config.mjs');saveConfig(dir,next);return local({action:'reload-trust'});}
-   case 'health': return {capabilities:['project-scope-v2','session-hourly-v1','urgent-steer-v1'],runtime:path.join(path.dirname(fileURLToPath(import.meta.url)),'cli.mjs'), version: VERSION, machine: config.machine, label:config.label??config.machine, paired: Object.entries(peers).map(([machine,p])=>({machine,label:p.label??machine})), lan: !!config.listen, limits: store.limits, queue:store.queueSummary() };
+   case 'health': return {capabilities:['project-scope-v2','session-hourly-v1','urgent-steer-v1','quota-detail-v1'],runtime:path.join(path.dirname(fileURLToPath(import.meta.url)),'cli.mjs'), version: VERSION, machine: config.machine, label:config.label??config.machine, paired: Object.entries(peers).map(([machine,p])=>({machine,label:p.label??machine})), lan: !!config.listen, limits: store.limits, queue:store.queueSummary() };
    case 'usage': store.authorized(session,token);return store.usage(session);
+   case 'quota': store.authorized(session,token);return store.quota(session,body.parent);
    case 'config': return store.session(session) ?? null;
    case 'configure': ensure(body.settings.peers.every(p => p === 'local' || Object.hasOwn(peers,p)), 'Allow only paired machines'); return store.configure(session, body.settings);
    case 'attach': return store.attach(session, body.owner, body.info);
@@ -161,13 +168,13 @@ export async function startService(dir, { config = readConfig(dir), interval = 1
    let out;
    if (!remote) out = await local(body);
    else if (body.action === 'list') out = { sessions: store.listing(machine,body.requester).slice(0,1000) };
-   else if (body.action === 'capabilities') out={capabilities:['urgent-steer-v1']};
+   else if (body.action === 'capabilities') out={capabilities:['urgent-steer-v1','quota-errors-v1']};
    else if (body.action === 'receive') out = store.receive(body.message, machine);
    else throw Object.assign(new Error('Remote operation forbidden'), { status: 403 });
    res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(out));
   } catch (e) {
    if (!res.headersSent) res.writeHead(e.status ?? 400, { 'content-type': 'application/json' });
-   res.end(JSON.stringify({ error: e.status ? e.message : 'Request failed' }));
+   res.end(JSON.stringify({ error: e.status ? e.message : 'Request failed',...(e.status&&e.code?{code:e.code}:{}),...(e.status&&e.details?{details:e.details}:{}) }));
   }
  }
  const server = http.createServer((req,res) => handler(req,res,false)); server.requestTimeout = 10000; server.headersTimeout = 10000;

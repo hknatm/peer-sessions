@@ -14,9 +14,9 @@ test('peer presence keeps the provider-visible history append-only (user turns, 
  execFileSync('git',['init',dir],{stdio:'ignore'});
  const service=await startService(dir,{config:{version:1,machine:'host',peers:{},listen:null},interval:60000});
  const {jiti}=await loadHostRuntime();const {default:extension}=await jiti.import(new URL('../extensions/peer.ts',import.meta.url).pathname);
- const events=new Map(),commands=new Map(),notices=[];let active=['read'];
+ const events=new Map(),commands=new Map(),tools=new Map(),notices=[];let active=['read'];
  const ctx={cwd:dir,sessionManager:{getSessionId:()=> 'receiver',getSessionFile:()=>'/private/session'},model:{provider:'p',id:'m'},thinkingLevel:'high',isIdle:()=>true,hasPendingMessages:()=>false,hasUI:true,ui:{notify:(...a)=>notices.push(a),setStatus(){},confirm:async()=>true}};
- const pi={on:(n,h)=>events.set(n,h),registerCommand:(n,h)=>commands.set(n,h),registerTool(t){active.push(t.name);},getActiveTools:()=>active,setActiveTools:n=>active=n,getSessionName:()=> 'Receiver',sendMessage(){}};
+ const pi={on:(n,h)=>events.set(n,h),registerCommand:(n,h)=>commands.set(n,h),registerTool(t){tools.set(t.name,t);active.push(t.name);},getActiveTools:()=>active,setActiveTools:n=>active=n,getSessionName:()=> 'Receiver',sendMessage(){}};
  try{
   extension(pi);await events.get('session_start')({reason:'startup'},ctx);
   await commands.get('peers').handler('on',ctx);
@@ -38,6 +38,9 @@ test('peer presence keeps the provider-visible history append-only (user turns, 
   // Peers coming and going between requests of the same turn must not rewrite the snapshot.
   service.store.configure('late',{enabled:true,project:service.store.session('receiver').project,peers:['local']});service.store.attach('late','late-owner');
   history=[...history,a('more',200)];let next=await run(history);assertAppendOnly(prev,next,'presence change inside a turn');prev=next;
+  // Read-only quota inspection is a tool response, never a dynamic hidden context item; repeated context stays byte-stable.
+  const inspected=JSON.parse((await tools.get('peer_quota').execute('quota',{})).content[0].text);assert.equal(inspected.hourly.used,0);
+  next=await run(history);assertAppendOnly(prev,next,'quota inspection');assert.equal(render(next),render(prev));prev=next;
 
   // 2. A new user turn adds exactly one more snapshot after itself.
   history=[...history,u('second task',300)];next=await run(history);assertAppendOnly(prev,next,'new user turn');assert.equal(presenceOf(next).length,2);prev=next;

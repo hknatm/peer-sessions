@@ -18,7 +18,7 @@ test('Pi adapter: no default participation, preserves model, closed backlog/manu
  const pi={on:(n,h)=>events.set(n,h),registerCommand:(n,h)=>commands.set(n,h),registerTool:t=>{tools.set(t.name,t);active.push(t.name);},getActiveTools:()=>active,setActiveTools:n=>active=n,getSessionName:()=> 'Receiver',sendMessage:(m,o)=>{sent.push({m,o});if(!busy)events.get('agent_start')?.();busy=true;}};
  try{
   extension(pi);await events.get('session_start')({reason:'startup'},ctx);assert.equal(service.store.session('receiver'),undefined);assert.deepEqual(active,['read']);
-  await commands.get('peers').handler('on',ctx);await commands.get('peers').handler('allow local',ctx);assert.ok(active.includes('peer_send'));
+  await commands.get('peers').handler('on',ctx);await commands.get('peers').handler('allow local',ctx);assert.ok(active.includes('peer_send'));assert.ok(active.includes('peer_quota'));
   service.store.configure('other',{enabled:true,project:{id:'other',label:'Other project'},peers:['local']});service.store.attach('other','other-owner');
   service.store.configure('sender',{enabled:true,project:service.store.session('receiver').project,peers:['local']});const st=service.store.attach('sender','sender-owner').token;
   function send(body,options={}){const out=service.store.send('sender',st,{to:'host/receiver',toProject:service.store.session('receiver').project.id,body,requestId:crypto.randomUUID(),...options});service.store.receive(out.message,'host');return `local_${out.id}`;}
@@ -35,6 +35,7 @@ test('Pi adapter: no default participation, preserves model, closed backlog/manu
   service.store.claim=(...args)=>{if(refuse){refuse=false;throw Object.assign(new Error('Manual acceptance required'),{status:403});}return claim(...args);};
   await events.get('agent_settled')();await new Promise(r=>setTimeout(r,30));assert.equal(service.store.get(denied).state,'pending');assert.equal(service.store.get(denied).eligible,attachment);assert.equal(service.store.attachments.get('receiver').token,attachment);
   await events.get('agent_settled')();await new Promise(r=>setTimeout(r,30));assert.equal(service.store.get(denied).state,'presented');assert.equal(sent.length,3);
+  const quota=JSON.parse((await tools.get('peer_quota').execute('id',{parent:denied})).content[0].text);assert.equal(quota.hourly.used,service.store.usage('receiver').used);assert.ok(quota.conversation.messages.remaining>=0);
   const compactSend=await tools.get('peer_send').execute('id',{to:'host/sender',body:'done',parent:denied});assert.deepEqual(Object.keys(JSON.parse(compactSend.content[0].text)),['id','state']);assert.ok(compactSend.content[0].text.length<100);
   const compactInbox=await tools.get('peer_inbox').execute('id',{});assert.ok(!compactInbox.content[0].text.includes('"envelope"'));assert.ok(!compactInbox.content[0].text.includes('"fromProject"'));
   assert.ok(sent[2].m.content.length<260);assert.ok(again.messages[0].content.length<600);

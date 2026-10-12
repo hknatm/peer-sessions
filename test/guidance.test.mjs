@@ -45,7 +45,8 @@ test('command discovery, unknown command error, readable status and no self-targ
   assert.equal(f.commands.peer.getArgumentCompletions('se')[0].value,'settings');
   assert.ok(f.commands.peers.getArgumentCompletions('').some(c=>c.value==='help'));
   await f.command('typo');assert.ok(f.notices.some(([text])=>text.includes('Unknown /peer command')));
-  await f.command('status');assert.ok(f.notices.some(([text])=>text.includes('enabled · attached')&&text.includes('LAN listener: off')));
+  await f.command('status');assert.ok(f.notices.some(([text])=>text.includes('enabled · attached')&&text.includes('LAN listener: off')&&text.includes('incoming 0, outgoing 0')));
+  await f.command('quota');assert.ok(f.notices.some(([text])=>text.includes('"incoming": 0')&&text.includes('"remaining": 80')));
   await f.command('', ['Sessions']);assert.ok(f.notices.some(([text])=>text.includes('No other permitted sessions')));
   assert.ok(f.screens[0].options.includes('Status'));
   assert.ok(f.notices.some(([text])=>text.includes('0/80 in rolling hour')));

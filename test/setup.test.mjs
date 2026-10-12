@@ -23,15 +23,20 @@ test('setup uses copied runtime and OS manager; repeat update, state retained',a
  try{
  initialize(dir);const machine=readConfig(dir).machine;
  // Real socket/server, fake OS manager so this test never installs host service jobs.
- service=await startService(dir);const out=await installService(dir,{verifyRuntime:false,root,home,run:(cmd,args)=>calls.push({cmd,args})});assert.equal(out.machine,machine);
+ const run=(cmd,args)=>{calls.push({cmd,args});if(args.includes('print'))throw Object.assign(new Error('missing'),{stderr:'Could not find service'});};
+ service=await startService(dir);const out=await installService(dir,{verifyRuntime:false,root,home,run});assert.equal(out.machine,machine);
  const file=serviceSpec({home,dir,entry:''}).file;assert.ok(fs.existsSync(file));const content=fs.readFileSync(file,'utf8');assert.ok(content.includes('/runtime/'));assert.ok(!content.includes(root));
- await installService(dir,{verifyRuntime:false,root,home,run:(cmd,args)=>calls.push({cmd,args})});assert.equal(readConfig(dir).machine,machine);assert.ok(calls.length>=3);if(process.platform==='darwin')assert.ok(execFileSync('/usr/bin/plutil',['-lint',file],{encoding:'utf8'}).includes('OK'));
+ await installService(dir,{verifyRuntime:false,root,home,run});assert.equal(readConfig(dir).machine,machine);assert.ok(calls.length>=3);if(process.platform==='darwin')assert.ok(execFileSync('/usr/bin/plutil',['-lint',file],{encoding:'utf8'}).includes('OK'));
  }finally{await service?.close();fs.rmSync(base,{recursive:true,force:true});}
 });
-test('activation failure restores previous unit without leaking errors or replacing identity',async()=>{
+test('activation failure waits for unload and restores previous unit without replacing identity',async()=>{
  const base=fs.mkdtempSync(path.join(os.tmpdir(),'peer-rollback-')),dir=path.join(base,'state'),home=path.join(base,'home');
- try{initialize(dir);const machine=readConfig(dir).machine,spec=serviceSpec({home,dir,entry:'/old/cli.mjs'});fs.mkdirSync(path.dirname(spec.file),{recursive:true});fs.writeFileSync(spec.file,spec.content);let starts=0;
- await assert.rejects(installService(dir,{root,home,run:(cmd,args)=>{if(args.includes('bootstrap')||args.includes('enable')){if(++starts===1)throw new Error('activation failed');}}}),/previous service restored/);
+ try{initialize(dir);const machine=readConfig(dir).machine,spec=serviceSpec({home,dir,entry:'/old/cli.mjs'});fs.mkdirSync(path.dirname(spec.file),{recursive:true});fs.writeFileSync(spec.file,spec.content);let starts=0,prints=0;
+ await assert.rejects(installService(dir,{root,home,pause:async()=>{},run:(cmd,args)=>{
+  if(args.includes('print')){prints++;if(prints%3!==0)return;throw Object.assign(new Error('missing'),{stderr:'Could not find service'});}
+  if(args.includes('bootstrap')||args.includes('enable')){if(++starts===1)throw Object.assign(new Error('activation failed'),{stderr:'manager detail'});}
+ }}),/previous service restored.*manager detail/);
+ if(process.platform==='darwin')assert.equal(prints,6);
  assert.equal(fs.readFileSync(spec.file,'utf8'),spec.content);assert.equal(readConfig(dir).machine,machine);
  }finally{fs.rmSync(base,{recursive:true,force:true});}
 });

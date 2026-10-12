@@ -39,7 +39,7 @@ export const HELP: Record<string,string> = {
  'Message allowance & costs': [
   'Each session shares 80 new incoming + outgoing messages per rolling hour across all peers. Retries/duplicates and acceptance do not count again. Counters survive restarts; cancelled records still count until their hour expires.',
   'At the receive limit, the sender keeps the message queued and retries. At the send limit, a new send fails visibly; retry after the time shown in Status. No messages are silently dropped.',
-  'Related conversations also have default depth/message/turn ceilings of 40 and a 24-hour deadline. These are separate from the rolling-hour allowance, not lifetime session limits.',
+  'Related conversations also have default depth/message/turn ceilings of 40 and a 24-hour deadline. These are separate from the rolling-hour allowance, not lifetime session limits. peer_quota with an incoming parent ID shows both before a reply.',
   'One message can cause many model/tool calls: this is a traffic allowance, not a token/cost cap. Auto-start is exact-sender permission, not auto-reply. Send short requests/results/blockers, not transcripts.'
  ].join('\n\n'),
  'Recovery & troubleshooting': [
@@ -61,12 +61,13 @@ export const HELP: Record<string,string> = {
   '/peer list — permitted sessions',
   '/peer inbox [PAGE] | outbox [PAGE] — raw message records; command pages start at 0',
   '/peer send MACHINE/SESSION message — send without starting a local turn',
+  '/peer quota [INBOX_ID] — session allowance; optional parent adds conversation budgets',
   '/peer accept INBOX_ID — start a turn with this session’s model',
   '/peer delivery MESSAGE_ID — transport receipt, not execution proof',
   '/peer allow MACHINE | deny MACHINE — session machine permission (local for this computer)',
   '/peer auto MACHINE/SESSION on|off — automatic turns; enabling requires confirmation',
   '/peer steer MACHINE/SESSION on|off — separate urgent steering permission; requires auto-start first',
-  'Use Sessions → Send urgent message and select an intent; agent peer_send accepts mode/kind and parent.',
+  'Use Sessions → Send urgent message and select an intent; agent peer_send accepts mode/kind and parent; peer_quota inspects session and parent-conversation limits.',
   '/peers — compatibility alias. Use the menus for queue pause/resume/cancel/dismiss.'
  ].join('\n')
 };
@@ -95,7 +96,7 @@ export function sessionStatus(health:any,config:any,attached:boolean,session:str
   serviceStatus(health),
   `This session: ${config?.enabled?(attached?'enabled · attached':'enabled · disconnected; run /peer enable to retry'):'disabled — use /peer enable'}`,
   `Address: ${health.machine}/${session}`,
-  usage?`Message allowance: ${usage.used}/${usage.limit} in rolling hour (incoming + outgoing, all peers); ${usage.remaining} remaining${usage.nextAvailable?`; next slot ${new Date(usage.nextAvailable).toISOString()}`:''}`:'Message allowance: connect session to inspect usage',
+  usage?`Message allowance: ${usage.used}/${usage.limit} in rolling hour (incoming ${usage.incoming??'?'}, outgoing ${usage.outgoing??'?'}, all peers); ${usage.remaining} remaining${usage.nextAvailable?`; next slot ${new Date(usage.nextAvailable).toISOString()}`:''}`:'Message allowance: connect session to inspect usage',
   `Project: ${config?.project?.label??'not confirmed'}`,
   `Project address: ${config?.project?`${health.machine}/${config.project.id}`:'enable to confirm project'}`,
   `Cross-project approvals: ${config?.allowedProjects?.length??0}`,

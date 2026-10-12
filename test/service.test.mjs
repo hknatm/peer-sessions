@@ -62,6 +62,40 @@ test('real mutual TLS: delivery, offline sender queue, receiver restart, revocat
   assert.equal((await rawRequest(sb.address.port,{version:2,action:'list'},{'x-peer-machine':'a',authorization:`Bearer ${secret}`},cert,key)).status,403);
  }finally{await sa?.close();await sb?.close();fs.rmSync(root,{recursive:true,force:true});}
 });
+test('remote permanent conversation limit rejects instead of retrying forever',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'ps-limit-reject-')),dir=path.join(root,'state');identity(dir,'solo');
+ const secret=crypto.randomBytes(32).toString('hex'),secretFile=path.join(dir,'peer.secret');fs.writeFileSync(secretFile,secret,{mode:0o600});
+ const remote=https.createServer({key:fs.readFileSync(path.join(dir,'identity.key')),cert:fs.readFileSync(path.join(dir,'identity.crt')),requestCert:true,rejectUnauthorized:false},async(req,res)=>{
+  for await(const _ of req){}res.writeHead(429,{'content-type':'application/json'});res.end(JSON.stringify({error:'Conversation message allowance exhausted (40/40); separate session rolling-hour usage is 0/80',code:'conversation_message_limit'}));
+ });let service;
+ try{
+  await new Promise(resolve=>remote.listen(0,'127.0.0.1',resolve));const config={version:1,machine:'solo',listen:null,peers:{remote:{url:`https://127.0.0.1:${remote.address().port}`,certificate:path.join(dir,'identity.crt'),secretFile}}};
+  service=await startService(dir,{config,interval:60000});const s=service.store;s.configure('sender',{enabled:true,project:{id:'p',label:'Project'},allowedProjects:['remote/rp'],peers:['remote']});const token=s.attach('sender','sender').token;
+  const row=s.send('sender',token,{to:'remote/target',toProject:'rp',body:'related reply',requestId:'limited'});await service.flush();assert.equal(s.get(row.id).state,'rejected');assert.match(s.get(row.id).error,/conversation_message_limit/);
+ }finally{await service?.close();await new Promise(resolve=>remote.close(resolve));fs.rmSync(root,{recursive:true,force:true});}
+});
+test('forget cancellation cannot be resurrected by a stale flush batch after re-enable',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'ps-forget-race-')),dir=path.join(root,'state');identity(dir,'solo');
+ const secret=crypto.randomBytes(32).toString('hex'),secretFile=path.join(dir,'peer.secret');fs.writeFileSync(secretFile,secret,{mode:0o600});
+ let releaseFirst;const firstBlocked=new Promise(resolve=>releaseFirst=resolve),seen=[];
+ const remote=https.createServer({key:fs.readFileSync(path.join(dir,'identity.key')),cert:fs.readFileSync(path.join(dir,'identity.crt')),requestCert:true,rejectUnauthorized:false},async(req,res)=>{
+  let data='';for await(const chunk of req)data+=chunk;const body=JSON.parse(data);
+  if(body.action==='receive'){seen.push(body.message.id);if(body.message.id==='first')await firstBlocked;}
+  res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify(body.action==='list'?{sessions:[]}:body.action==='capabilities'?{capabilities:['urgent-steer-v1']}:{received:true}));
+ });let service;
+ try{
+  await new Promise(resolve=>remote.listen(0,'127.0.0.1',resolve));const port=remote.address().port;
+  const config={version:1,machine:'solo',listen:null,peers:{remote:{url:`https://127.0.0.1:${port}`,certificate:path.join(dir,'identity.crt'),secretFile}}};
+  service=await startService(dir,{config,interval:60000});const s=service.store;
+  for(const sid of ['current','old'])s.configure(sid,{enabled:true,project:{id:'p',label:'Project'},allowedProjects:['remote/rp'],peers:['local','remote']});
+  const current=s.attach('current','current').token,old=s.attach('old','old').token;
+  s.send('current',current,{to:'remote/target',toProject:'rp',body:'stall',requestId:'first'});s.send('old',old,{to:'remote/target',toProject:'rp',body:'cancel me',requestId:'second'});s.detach('old',old);
+  const flushing=service.flush();while(!seen.includes('first'))await new Promise(resolve=>setTimeout(resolve,5));
+  assert.equal(s.forgetSession('current','old').cancelled,1);assert.equal(s.get('second').state,'cancelled');
+  s.configure('old',{enabled:true,project:{id:'p',label:'Project'},allowedProjects:['remote/rp'],peers:['local','remote']});releaseFirst();await flushing;
+  assert.deepEqual(seen,['first']);assert.equal(s.get('second').state,'cancelled');
+ }finally{releaseFirst?.();await service?.close();await new Promise(resolve=>remote.close(resolve));fs.rmSync(root,{recursive:true,force:true});}
+});
 test('local forget endpoint requires the caller attachment and protects connected sessions',async()=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'ps-forget-'));const config={version:1,machine:'solo',peers:{},listen:null};let s;
  try{

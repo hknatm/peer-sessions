@@ -15,7 +15,7 @@ export function jsonRequest(transport, options, body, deadlineMs = 6000) {
    let chunks = '', bytes = 0;
    res.on('data', chunk => { bytes += chunk.length; if (bytes > 262144) { res.destroy(); finish(new Error('Response too large')); } else chunks += chunk; });
    res.on('error', error => finish(error));
-   res.on('end', () => { try { const out = JSON.parse(chunks); if (res.statusCode >= 400) finish(Object.assign(new Error(out.error ?? 'Peer request failed'), { status: res.statusCode })); else finish(null,out); } catch (e) { finish(e); } });
+   res.on('end', () => { try { const out = JSON.parse(chunks); if (res.statusCode >= 400) finish(Object.assign(new Error(out.error ?? 'Peer request failed'), { status: res.statusCode,...(out.code?{peerCode:out.code}:{}),...(out.details?{details:out.details}:{}) })); else finish(null,out); } catch (e) { finish(e); } });
   });
   req.setTimeout(Math.min(5000,deadlineMs), () => req.destroy(new Error('Connection timeout'))); req.on('error', error => finish(error)); req.end(data);
  });
