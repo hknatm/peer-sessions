@@ -54,7 +54,7 @@ export default function(pi: ExtensionAPI) {
   presence=rows;
   if(changed)show(`Same-project peers: ${rows.length} running. Use /peer → Sessions. Presence never starts a model turn.`);
  }
- const tools = ['peer_list', 'peer_send', 'peer_inbox'];
+ const tools = ['peer_list', 'peer_send', 'peer_inbox', 'peer_quota'];
  function exposure(active: boolean) { const all = pi.getActiveTools().filter(n => !tools.includes(n)); pi.setActiveTools(active ? [...all,...tools] : all); }
  function info() { return { busy: !ctx?.isIdle() || !!ctx?.hasPendingMessages(), model: ctx?.model ? `${ctx.model.provider}/${ctx.model.id}` : '', thinking: ctx?.thinkingLevel ?? '',steering:true,running:runActive }; }
  async function call(action: string, args: object = {}) { return requestLocal(dir,action,{session,token,...args}); }
@@ -87,7 +87,7 @@ export default function(pi: ExtensionAPI) {
   try {
    if(!token) {
     const health=await requestLocal(dir,'health');
-    if(!health.capabilities?.includes('urgent-steer-v1'))throw Object.assign(new Error('Service update required'),{status:409});
+    if(!health.capabilities?.includes('urgent-steer-v1')||!health.capabilities?.includes('quota-detail-v1'))throw Object.assign(new Error('Service update required'),{status:409});
     const config=await requestLocal(dir,'config',{session:sid});
     if(gen!==generation || stopped)return;
     if(!config?.enabled) {presence=[];snapshots.clear();exposure(false);ctx.ui.setStatus('peers',undefined);return;}
@@ -223,7 +223,8 @@ export default function(pi: ExtensionAPI) {
    const selected=await fresh.ui.select('Sessions — receive mode applies HERE, from this sender',labels);if(!selected)return;
    const target=rows[labels.indexOf(selected)];if(target.state==='unreachable'){show('Machine unreachable; existing queues remain safe.');return;}
    const automatic=config.auto.includes(target.address),steering=config.steer?.includes(target.address);
-   const action=await fresh.ui.select(`${menuText(target.label??target.address,24)} — receive here: ${receiveMode(config,target.address)}`,['Send message','Send urgent message',automatic?'Disable auto-start from this session':'Allow auto-start from this session',...(automatic?[steering?'Disable urgent steering from this session':'Allow urgent steering from this session']:[]),'Delivery & permission help','Details','Back']);
+   const localClosed=target.state==='session-closed'&&target.address.startsWith(`${machine}/`);
+   const action=await fresh.ui.select(`${menuText(target.label??target.address,24)} — receive here: ${receiveMode(config,target.address)}`,['Send message','Send urgent message',automatic?'Disable auto-start from this session':'Allow auto-start from this session',...(automatic?[steering?'Disable urgent steering from this session':'Allow urgent steering from this session']:[]),...(localClosed?['Forget closed session']:[]),'Delivery & permission help','Details','Back']);
    if(action==='Send message'||action==='Send urgent message'){
     const urgent=action==='Send urgent message';
     if(urgent&&!await fresh.ui.confirm('Send an urgent update?', 'The recipient must authorize YOU for urgent steering. Your receive settings only control messages coming here. Without its permission this stays manual; steering cannot stop a running tool or undo actions.'))return;
@@ -231,6 +232,12 @@ export default function(pi: ExtensionAPI) {
     const kind=intent.split(' — ')[0].toLowerCase();
     const body=await fresh.ui.editor(`${urgent?'Urgent':'Normal'} to ${menuText(target.label??target.address)} — recipient controls processing`,'');
     if(body?.trim()){if(menuGeneration!==generation||menuSession!==session||stopped)throw new Error('Session changed; send cancelled.');const row=await call('send',{to:target.address,body,mode:urgent?'urgent':'normal',...(kind!=='plain'?{kind}:{}),requestId:crypto.randomUUID()});show(`Message queued (${row.id}); stored receipt is not agreement or completed work.`);}
+   }
+   else if(action==='Forget closed session'){
+    if(!await fresh.ui.confirm('Forget this closed peer session?',`Remove ${menuText(target.label??target.address)} from peer discovery and clear its peer permissions. Pending sends owned by it will be cancelled; stored message records and its Pi transcript are retained. Reopening the transcript can enable it again.`))return;
+    if(menuGeneration!==generation||menuSession!==session||stopped)throw new Error('Session changed; forget cancelled.');
+    const result=await call('forget-session',{target:target.address.split('/')[1]});
+    show(`Closed session forgotten.${result.cancelled?` ${result.cancelled} pending send${result.cancelled===1?'':'s'} cancelled.`:''} Stored message records and the Pi transcript were retained.`);
    }
    else if(action==='Delivery & permission help')show('Receive mode applies HERE: manual review requires acceptance; auto when idle allows new normal messages to start here; auto + urgent also lets authorized urgent messages enter active work. Your outgoing messages follow the OTHER session’s permissions. Enable auto-start first, then urgent steering. Earlier backlog stays manual. Disabling auto-start also removes steering.');
    else if(action==='Details')show(`Address: ${target.address}\nState: ${target.state}\nIncoming auto-start: ${automatic?'on':'off'}\nReceive auto = new messages from this sender start here when idle; busy messages wait. Receive review = manual acceptance. Earlier backlog, reconnects and uncertain turns still require review. Urgent steering from this sender: ${steering?'on':'off'} (separate permission; never a hard abort). Replies must be explicit. The recipient controls your outgoing messages.`);
@@ -300,6 +307,7 @@ export default function(pi: ExtensionAPI) {
    }else if(command==='accept')await accept(rest[0],true);
    else if(command==='send')show(await call('send',{to:rest[0],body:rest.slice(1).join(' '),requestId:crypto.randomUUID()}));
    else if(command==='delivery')show(await call('delivery',{id:rest[0]}));
+   else if(command==='quota')show(await call('quota',rest[0]?{parent:rest[0]}:{}));
    else if(command==='inbox')show(await call('inbox',{page:Number(rest[0]??0)}));
    else if(command==='outbox')show(await call('queue',{page:Number(rest[0]??0),direction:'out'}));
    else if(command==='status')show(sessionStatus(await call('health'),await call('config'),!!token,session,token?await call('usage'):null));
@@ -307,7 +315,7 @@ export default function(pi: ExtensionAPI) {
    else throw new Error(`Unknown /peer command: ${command}. Use /peer help or open /peer.`);
   }catch(e:any){fresh.ui.notify(['ENOENT','ECONNREFUSED'].includes(e.code)?'Peer service unavailable. Use /peer → Service → Update/reinstall service, or /peer enable for confirmed setup. Queues are preserved.':e.message,'error');}
  }
- const commands:Record<string,string>={enable:'Enable this session; confirmed service setup if needed',disable:'Disable this session; preserve mail',list:'List permitted sessions',inbox:'Stored incoming messages (pages start at 0)',outbox:'Outgoing delivery records (pages start at 0)',status:'Connection, session permission and queue summary',cooperate:'Approve/revoke cross-project cooperation (operator UI only)',settings:'Connection examples, automatic auth and guidance',help:'Setup, permissions, recovery and commands',pair:'Guided secure machine pairing',service:'Status, update/reinstall, restart or uninstall',send:'Send to MACHINE/SESSION',accept:'Start a turn for INBOX_ID',delivery:'Check transport receipt for MESSAGE_ID',allow:'Allow paired MACHINE for this session',deny:'Block MACHINE for this session',steer:'Authorize urgent steering from MACHINE/SESSION on|off',auto:'Allow automatic turns from MACHINE/SESSION on|off'};
+ const commands:Record<string,string>={enable:'Enable this session; confirmed service setup if needed',disable:'Disable this session; preserve mail',list:'List permitted sessions',inbox:'Stored incoming messages (pages start at 0)',outbox:'Outgoing delivery records (pages start at 0)',status:'Connection, permissions and queue summary',quota:'Session allowance; optional INBOX_ID adds conversation budgets',cooperate:'Approve/revoke cross-project cooperation (operator UI only)',settings:'Connection examples, automatic auth and guidance',help:'Setup, permissions, recovery and commands',pair:'Guided secure machine pairing',service:'Status, update/reinstall, restart or uninstall',send:'Send to MACHINE/SESSION',accept:'Start a turn for INBOX_ID',delivery:'Check transport receipt for MESSAGE_ID',allow:'Allow paired MACHINE for this session',deny:'Block MACHINE for this session',steer:'Authorize urgent steering from MACHINE/SESSION on|off',auto:'Allow automatic turns from MACHINE/SESSION on|off'};
  const getArgumentCompletions=(prefix:string)=>Object.entries(commands).filter(([name])=>name.startsWith(prefix)).map(([value,description])=>({value,label:value,description}));
  const handler=async(args:string,fresh:any)=>{try{await commandHandler(args,fresh);}catch(e:any){fresh.ui.notify(e.message,'error');}};
  pi.registerCommand('peer',{description:'Independent peer sessions — menu, settings/help, secure pairing and queues.',getArgumentCompletions,handler});
@@ -335,7 +343,9 @@ export default function(pi: ExtensionAPI) {
   show('Cross-project permission updated. Both sessions need reciprocal project approval and machine permission.');
  }
  function result(value:unknown){return {content:[{type:'text' as const,text:JSON.stringify(value)}],details:undefined};}
+ function toolError(error:any){if(error.peerCode)throw new Error(`${error.peerCode}: ${error.message}`);throw error;}
  pi.registerTool({name:'peer_list',description:'List permitted independent peer sessions. No spawning or transcript access.',parameters:Type.Object({}),async execute(){return result((await call('list')).map((r:any)=>({address:r.address,label:r.label,state:r.state,...(r.project?{project:r.project.label}:{})})));}});
  pi.registerTool({name:'peer_inbox',description:'Read stored peer messages in pages of five, including IDs for replies. Does not accept or start work.',parameters:Type.Object({page:Type.Optional(Type.Integer({minimum:0}))}),async execute(_id,args){return result((await call('inbox',args)).map((r:any)=>({id:r.id,from:`${r.message.fromMachine}/${r.message.fromSession}`,state:r.state,auto:r.autoEligible,mode:r.message.mode??'normal',...(r.message.kind?{kind:r.message.kind}:{}),body:r.message.body})));}});
- pi.registerTool({name:'peer_send',description:'Send text to an allowed MACHINE/SESSION peer. For replies/related work supply the incoming inbox parent ID; never reset conversation budgets by inventing new requests. Normal waits until idle; urgent needs separate recipient steering permission. kind proposal/decision/blocker/result is advisory: proposals need explicit confirmation before shared/irreversible action. No auto-replies; short actionable text. Request ID allows safe retry.',parameters:Type.Object({to:Type.String(),body:Type.String(),mode:Type.Optional(Type.Union([Type.Literal('normal'),Type.Literal('urgent')])),kind:Type.Optional(Type.Union(['proposal','decision','blocker','result'].map(k=>Type.Literal(k)))),parent:Type.Optional(Type.String()),requestId:Type.Optional(Type.String())}),async execute(_id,args){const row=await call('send',{...args,requestId:args.requestId??crypto.randomUUID()});return result({id:row.id,state:row.state});}});
+ pi.registerTool({name:'peer_quota',description:'Inspect this session rolling-hour traffic allowance. With an incoming parent ID, also inspect that related conversation’s message, wake, depth and expiry budgets before replying. Read-only; does not start work or alter provider context.',parameters:Type.Object({parent:Type.Optional(Type.String())}),async execute(_id,args){try{return result(await call('quota',args));}catch(error){toolError(error);}}});
+ pi.registerTool({name:'peer_send',description:'Send text to an allowed MACHINE/SESSION peer. For replies/related work supply the incoming inbox parent ID; never reset conversation budgets by inventing new requests. If a limit rejects the send, distinguish session_hourly_limit from conversation_message_limit or conversation_depth_limit; peer_quota can inspect them. Normal waits until idle; urgent needs separate recipient steering permission. kind proposal/decision/blocker/result is advisory: proposals need explicit confirmation before shared/irreversible action. No auto-replies; short actionable text. Request ID allows safe retry.',parameters:Type.Object({to:Type.String(),body:Type.String(),mode:Type.Optional(Type.Union([Type.Literal('normal'),Type.Literal('urgent')])),kind:Type.Optional(Type.Union(['proposal','decision','blocker','result'].map(k=>Type.Literal(k)))),parent:Type.Optional(Type.String()),requestId:Type.Optional(Type.String())}),async execute(_id,args){try{const row=await call('send',{...args,requestId:args.requestId??crypto.randomUUID()});return result({id:row.id,state:row.state});}catch(error){toolError(error);}}});
 }

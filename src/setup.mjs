@@ -32,32 +32,45 @@ export function stageRuntime(dir,root=ROOT) {
  for(const file of runtimeFiles)ensure(fs.readFileSync(path.join(runtime,file)).equals(fs.readFileSync(path.join(root,'src',file))),'Staged service runtime content mismatch');
  return {entry:path.join(runtime,'cli.mjs'),version:pkg.version};
 }
-function manager(spec,operation,run) {
+const missingLaunchService=error=>/Could not find service|No such process/i.test(String(error?.stderr??error));
+const errorDetail=error=>String(error?.stderr??error?.message??error).trim().replace(/\s+/g,' ').slice(0,500);
+async function manager(spec,operation,run,pause) {
  if(process.platform==='darwin'){
-  if(operation==='stop'){try{run('launchctl',['bootout',spec.target]);}catch(e){if(!/Could not find service|No such process/i.test(String(e.stderr)))throw e;}}
-  else if(operation==='start')run('launchctl',['bootstrap',spec.domain,spec.file]);
+  if(operation==='stop'){
+   try{run('launchctl',['bootout',spec.target]);}catch(e){if(!missingLaunchService(e))throw e;}
+   // bootout returns before launchd has always removed the job. An immediate bootstrap can then fail with
+   // "Input/output error"; the equally immediate rollback races the same job and can fail too.
+   for(let i=0;i<40;i++){
+    try{run('launchctl',['print',spec.target]);}catch(e){if(missingLaunchService(e))return;throw e;}
+    await pause(100);
+   }
+   throw new Error('Timed out waiting for launchd to unload the previous service');
+  }
+  run('launchctl',['bootstrap',spec.domain,spec.file]);
  }else{
   if(operation==='stop')run('systemctl',['--user','stop','pi-peer-sessions.service']);
   else{run('systemctl',['--user','daemon-reload']);run('systemctl',['--user','enable','--now','pi-peer-sessions.service']);}
  }
 }
 export async function waitHealthy(dir){let last;for(let i=0;i<40;i++){try{return await requestLocal(dir,'health');}catch(e){last=e;await new Promise(r=>setTimeout(r,250));}}throw new Error(`Peer service did not become healthy (${last?.code??'protocol error'}). Run /peer status.`);}
-export async function installService(dir,{verifyRuntime=true,root=ROOT,run=(cmd,args)=>execFileSync(cmd,args,{stdio:['ignore','pipe','pipe']}),home=os.homedir()}={}) {
+export async function installService(dir,{verifyRuntime=true,root=ROOT,run=(cmd,args)=>execFileSync(cmd,args,{stdio:['ignore','pipe','pipe']}),pause=ms=>new Promise(resolve=>setTimeout(resolve,ms)),home=os.homedir()}={}) {
  initialize(dir);const staged=stageRuntime(dir,root),spec=serviceSpec({home,dir,entry:staged.entry});
  const previous=fs.existsSync(spec.file)?fs.readFileSync(spec.file,'utf8'):null;
  // Never overwrite a different user's/custom unit with this label.
  if(previous)ensure(previous.includes(OWNER_MARK),'Existing service file not owned by this package');
  fs.mkdirSync(path.dirname(spec.file),{recursive:true});
  try{
-  if(previous){manager(spec,'stop',run);}
-  fs.writeFileSync(spec.file,spec.content,{mode:0o600});manager(spec,'start',run);
+  if(previous){await manager(spec,'stop',run,pause);}
+  fs.writeFileSync(spec.file,spec.content,{mode:0o600});await manager(spec,'start',run,pause);
   const health=await waitHealthy(dir);ensure(health.machine===readConfig(dir).machine,'Service identity mismatch');ensure(!verifyRuntime || health.runtime===staged.entry,'Different service answered activation health check');return {version:staged.version,machine:health.machine};
  }catch(error){
-  try{manager(spec,'stop',run);}catch{}
-  if(previous){fs.writeFileSync(spec.file,previous,{mode:0o600});try{manager(spec,'start',run);}catch{throw new Error('Service activation and rollback failed; queues retained. Inspect user service manager.');}}
-  else if(fs.existsSync(spec.file))fs.unlinkSync(spec.file);
-  throw new Error(`Service setup failed; ${previous?'previous service restored':'no service installed'}. Queues preserved. ${error.code??''}`);
+  try{await manager(spec,'stop',run,pause);}catch{}
+  if(previous){
+   fs.writeFileSync(spec.file,previous,{mode:0o600});
+   try{await manager(spec,'start',run,pause);}catch(rollback){throw new Error(`Service activation failed (${errorDetail(error)}); rollback also failed (${errorDetail(rollback)}). Queues retained. Inspect user service manager.`);}
+  }else if(fs.existsSync(spec.file))fs.unlinkSync(spec.file);
+  throw new Error(`Service setup failed; ${previous?'previous service restored':'no service installed'}. Queues preserved. ${errorDetail(error)}`);
  }
 }
 export async function restartService(dir){const spec=serviceSpec({dir,entry:''});ensure(fs.existsSync(spec.file),'User service not installed; use /peer enable');ensure(fs.readFileSync(spec.file,'utf8').includes(OWNER_MARK),'Service file not owned by this package');if(process.platform==='darwin')execFileSync('launchctl',['kickstart','-k',spec.target]);else execFileSync('systemctl',['--user','restart','pi-peer-sessions.service']);return waitHealthy(dir);}
-export function uninstallService(dir){const spec=serviceSpec({dir,entry:''});if(!fs.existsSync(spec.file))return;ensure(fs.readFileSync(spec.file,'utf8').includes(OWNER_MARK),'Service file not owned by this package');const run=(cmd,args)=>execFileSync(cmd,args,{stdio:['ignore','pipe','pipe']});manager(spec,'stop',run);if(process.platform==='linux')run('systemctl',['--user','disable','pi-peer-sessions.service']);fs.unlinkSync(spec.file);if(process.platform==='linux')run('systemctl',['--user','daemon-reload']);}
+export async function uninstallService(dir,{run=(cmd,args)=>execFileSync(cmd,args,{stdio:['ignore','pipe','pipe']}),pause=ms=>new Promise(resolve=>setTimeout(resolve,ms)),home=os.homedir()}={}){const spec=serviceSpec({home,dir,entry:''});if(!fs.existsSync(spec.file))return;ensure(fs.readFileSync(spec.file,'utf8').includes(OWNER_MARK),'Service file not owned by this package');await manager(spec,'stop',run,pause);if(process.platform==='linux')run('systemctl',['--user','disable','pi-peer-sessions.service']);fs.unlinkSync(spec.file);if(process.platform==='linux')run('systemctl',['--user','daemon-reload']);}

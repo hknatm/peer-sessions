@@ -24,6 +24,30 @@ test('opt-in, exclusive leases, revocation, new identities',()=>{
  assert.equal(f.s.listing('remote',{session:'x',project:{id:'rp',label:'Remote'}}).length,1);
  }finally{f.close();}
 });
+test('forget closed local session removes discovery and permissions but retains message records',()=>{
+ const f=fixture();try{
+  const requestId=uid(),out=f.s.send('b',f.b,{to:'host/a',toProject:'p',body:'pending',requestId});
+  const delivered=f.s.send('a',f.a,{to:'host/b',toProject:'p',body:'retained',requestId:uid()});f.s.receive(delivered.message,'host');
+  const received=remote();f.s.receive(received,'remote');
+  assert.throws(()=>f.s.forgetSession('a','a'),/current session/);
+  assert.throws(()=>f.s.forgetSession('a','b'),/connected/);
+  f.s.detach('b',f.b);f.s.inFlight.add(out.id);assert.throws(()=>f.s.forgetSession('a','b'),/in-flight/);f.s.inFlight.delete(out.id);
+  const result=f.s.forgetSession('a','b');assert.deepEqual(result,{forgotten:true,session:'b',cancelled:1});assert.equal(f.s.get(out.id).state,'cancelled');
+  assert.equal(f.s.session('b'),undefined);assert.deepEqual(f.s.listing('host',{session:'a',project:{id:'p',label:'Project'}}),[]);
+  assert.equal(f.s.get(received.id).message.body,'message');assert.equal(f.s.get(`local_${delivered.id}`).message.body,'retained');
+  assert.throws(()=>f.s.forgetSession('a','b'),/unknown or already forgotten/);
+  f.s.configure('b',{enabled:true,project:{id:'p',label:'Project'},peers:['local']});assert.equal(f.s.session('b').enabled,1);
+ }finally{f.close();}
+});
+test('forget closed session clears sender permissions and cancels its pending sends',()=>{
+ const f=fixture();try{
+  f.s.configure('a',{enabled:true,project:{id:'p',label:'Project'},allowedProjects:['remote/rp'],peers:['local','remote'],auto:['host/b'],steer:['host/b']});
+  const queued=f.s.send('b',f.b,{to:'host/a',toProject:'p',body:'queued',requestId:uid()});
+  f.s.queueControl('b','pause');f.s.detach('b',f.b);
+  const result=f.s.forgetSession('a','b');assert.equal(result.cancelled,1);assert.equal(f.s.get(queued.id).state,'cancelled');assert.equal(f.s.get(queued.id).error,'Sender session forgotten');
+  assert.deepEqual(f.s.session('a').auto,[]);assert.deepEqual(f.s.session('a').steer,[]);
+ }finally{f.close();}
+});
 test('durable deduplication and conflicting duplicates',()=>{
  const f=fixture();try{const m=remote();f.s.receive(m,'remote');f.s.receive(m,'remote');assert.equal(f.s.inbox('b',f.b).length,1);
  f.s.claim('b',f.b,m.id);f.s.presented('b',f.b,m.id);f.s.settled('b',f.b,m.id,false);assert.equal(f.s.get(m.id).state,'uncertain');
@@ -35,9 +59,20 @@ test('local messages, reply depth, retry ID, persisted conversation budgets',()=
  const f=fixture({maxDepth:2,maxMessages:2});try{
  const requestId=uid(),args={to:'host/b',toProject:'p',body:'hello',requestId};const out=f.s.send('a',f.a,args);assert.equal(f.s.send('a',f.a,args).id,requestId);
  f.s.receive(out.message,'host');const inbox=f.s.inbox('b',f.b)[0];assert.equal(inbox.id,`local_${requestId}`);
+ const firstQuota=f.s.quota('b',inbox.id);assert.equal(firstQuota.hourly.used,1);assert.equal(firstQuota.conversation.messages.remaining,1);assert.deepEqual(firstQuota.reply,{allowed:true,blockedBy:[]});
  const reply=f.s.send('b',f.b,{to:'host/a',toProject:'p',body:'reply',parent:inbox.id,requestId:uid()});assert.equal(reply.message.depth,2);assert.equal(reply.message.expires,out.message.expires);
- f.s.receive(reply.message,'host');assert.throws(()=>f.s.send('a',f.a,{to:'host/b',toProject:'p',body:'again',parent:f.s.inbox('a',f.a)[0].id,requestId:uid()}),/Chain depth/);
+ f.s.receive(reply.message,'host');const parent=f.s.inbox('a',f.a)[0],quota=f.s.quota('a',parent.id);assert.equal(quota.hourly.used,2);assert.equal(quota.hourly.incoming,1);assert.equal(quota.hourly.outgoing,1);assert.equal(quota.conversation.messages.remaining,0);assert.equal(quota.conversation.depth.remaining,0);assert.deepEqual(quota.reply.blockedBy,['conversation_message_limit','conversation_depth_limit']);
+ let limited;try{f.s.send('a',f.a,{to:'host/b',toProject:'p',body:'again',parent:parent.id,requestId:uid()});}catch(error){limited=error;}assert.equal(limited.code,'conversation_depth_limit');assert.match(limited.message,/separate session rolling-hour usage is 2\/80/);
  assert.throws(()=>f.s.send('a',f.a,{...args,body:'other'}),/Conflicting/);
+ }finally{f.close();}
+});
+test('conversation message limit is structured and distinct from zero hourly usage',()=>{
+ const f=fixture({maxMessages:1});try{
+  const incoming=remote();f.s.receive(incoming,'remote');f.s.db.prepare('UPDATE messages SET received=? WHERE id=?').run(Date.now()-3600000,incoming.id);
+  const quota=f.s.quota('b',incoming.id);assert.equal(quota.hourly.used,0);assert.equal(quota.conversation.messages.remaining,0);assert.deepEqual(quota.reply.blockedBy,['conversation_message_limit']);
+  let limited;try{f.s.send('b',f.b,{to:'host/a',toProject:'p',body:'reply',parent:incoming.id,requestId:uid()});}catch(error){limited=error;}
+  assert.equal(limited.code,'conversation_message_limit');assert.equal(limited.details.hourly.used,0);assert.match(limited.message,/separate session rolling-hour usage is 0\/80/);
+  f.s.db.prepare('UPDATE conversations SET expires=? WHERE id=?').run(Date.now()-1,incoming.conversation);const expired=f.s.quota('b',incoming.id);assert.ok(expired.reply.blockedBy.includes('conversation_expired'));assert.ok(expired.processing.blockedBy.includes('conversation_expired'));
  }finally{f.close();}
 });
 test('closed session and lease expiry backlog is manual; auto-start only new arrival',()=>{
@@ -56,7 +91,7 @@ test('crash recovery: presented processing is uncertain and never auto replayed'
 });
 test('wake budget, permission revoked, expiry, capacity and unsupported version',()=>{
  const f=fixture({maxWakes:1,mailboxRows:1});try{
- const m=remote();f.s.receive(m,'remote');assert.throws(()=>f.s.receive(remote(),'remote'),/Mailbox full/);f.s.claim('b',f.b,m.id);f.s.detach('b',f.b);const token=f.s.attach('b','new').token;assert.throws(()=>f.s.claim('b',token,m.id,true),/wake budget/);assert.equal(f.s.get(m.id).eligible,null);
+ const m=remote();f.s.receive(m,'remote');assert.throws(()=>f.s.receive(remote(),'remote'),/Mailbox full/);f.s.claim('b',f.b,m.id);f.s.detach('b',f.b);const token=f.s.attach('b','new').token;let limited;try{f.s.claim('b',token,m.id,true);}catch(error){limited=error;}assert.equal(limited.code,'conversation_wake_limit');assert.equal(limited.details.conversation.wakes,1);assert.equal(f.s.get(m.id).eligible,null);
  f.s.configure('b',{enabled:true,project:{id:'p',label:'Project'},allowedProjects:['remote/rp'],peers:['local']});assert.throws(()=>f.s.claim('b',token,m.id,true),/revoked/);
  assert.throws(()=>f.s.receive(remote({expires:Date.now()-1}),'remote'),/expired/);
  }finally{f.close();}
