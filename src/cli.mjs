@@ -15,7 +15,7 @@ try{
  else if(command==='identity'){const {certificate,...info}=identity(dir);console.log(JSON.stringify(info,null,2));}
  else if(command==='install-service'){ensure(args.includes('--yes'),'Pass --yes to approve a user background service. Prefer /peer enable in Pi.');console.log(JSON.stringify(await installService(dir)));}
  else if(command==='restart-service')console.log(JSON.stringify(await restartService(dir)));
- else if(command==='uninstall-service'){ensure(args.includes('--yes'),'Pass --yes to stop/remove the user service; queues remain.');uninstallService(dir);console.log('User service removed. State and queues retained.');}
+ else if(command==='uninstall-service'){ensure(args.includes('--yes'),'Pass --yes to stop/remove the user service; queues remain.');await uninstallService(dir);console.log('User service removed. State and queues retained.');}
  else if(command==='serve'){
   const service=await startService(dir);console.log('Peer service started; never launches Pi.');let stopping=false;
   const stop=async()=>{if(stopping)return;stopping=true;await service.close();};process.on('SIGTERM',stop);process.on('SIGINT',stop);

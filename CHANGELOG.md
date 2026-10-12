@@ -3,7 +3,7 @@
 ## 0.3.0 — Unreleased
 
 - Distinguish rolling-hour session traffic from related-conversation message, wake and depth ceilings with structured limit codes. Add read-only `peer_quota` inspection (optionally scoped to an incoming parent), show incoming/outgoing hourly counts in status, and preserve the cache-stable presence context unchanged.
-- Make macOS service replacement wait for launchd to finish unloading before activation or rollback, and retain actionable manager errors instead of collapsing the unload race into a generic rollback failure.
+- Make macOS service replacement and uninstall wait for launchd to finish unloading before activation, rollback or unit removal, and retain actionable manager errors instead of collapsing the unload race into a generic rollback failure.
 - Raise the default per-session rolling-hour allowance from 40 to 80 total incoming + outgoing messages across all peers; each participating session enforces its own shared allowance.
 - Add a confirmed Sessions → Forget closed session action for disconnected local remnants. It removes peer discovery/permissions and cancels pending sends owned by the forgotten session while retaining message records and the separate Pi transcript; connected, current and remote sessions are protected.
 - Prompt-cache fix: peer presence is snapshotted once per user turn and placed right after that user message, keeping history append-only; no presence socket call on later requests in the turn.

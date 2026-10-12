@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { serviceSpec,stageRuntime,installService } from '../src/setup.mjs';
+import { serviceSpec,stageRuntime,installService,uninstallService } from '../src/setup.mjs';
 import {execFileSync} from 'node:child_process';
 import { initialize,readConfig } from '../src/config.mjs';
 import { startService } from '../src/service.mjs';
@@ -28,6 +28,14 @@ test('setup uses copied runtime and OS manager; repeat update, state retained',a
  const file=serviceSpec({home,dir,entry:''}).file;assert.ok(fs.existsSync(file));const content=fs.readFileSync(file,'utf8');assert.ok(content.includes('/runtime/'));assert.ok(!content.includes(root));
  await installService(dir,{verifyRuntime:false,root,home,run});assert.equal(readConfig(dir).machine,machine);assert.ok(calls.length>=3);if(process.platform==='darwin')assert.ok(execFileSync('/usr/bin/plutil',['-lint',file],{encoding:'utf8'}).includes('OK'));
  }finally{await service?.close();fs.rmSync(base,{recursive:true,force:true});}
+});
+test('uninstall waits for macOS launchd unload before removing its unit',async()=>{
+ if(process.platform!=='darwin')return;
+ const base=fs.mkdtempSync(path.join(os.tmpdir(),'peer-uninstall-')),dir=path.join(base,'state'),home=path.join(base,'home'),spec=serviceSpec({home,dir,entry:'/runtime/cli.mjs'});let prints=0;
+ try{fs.mkdirSync(path.dirname(spec.file),{recursive:true});fs.writeFileSync(spec.file,spec.content);
+  await uninstallService(dir,{home,pause:async()=>{},run:(cmd,args)=>{if(args.includes('print')){if(++prints<3)return;throw Object.assign(new Error('missing'),{stderr:'Could not find service'});}}});
+  assert.equal(prints,3);assert.equal(fs.existsSync(spec.file),false);
+ }finally{fs.rmSync(base,{recursive:true,force:true});}
 });
 test('activation failure waits for unload and restores previous unit without replacing identity',async()=>{
  const base=fs.mkdtempSync(path.join(os.tmpdir(),'peer-rollback-')),dir=path.join(base,'state'),home=path.join(base,'home');

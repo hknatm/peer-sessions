@@ -101,5 +101,5 @@ export async function serviceManagement(dir:string,ctx:ExtensionContext){
  }
  else if(choice==='Update/reinstall service'&&await ctx.ui.confirm('Activate installed package service release?','The service restarts. Queues and identity are preserved; failed activation attempts rollback.')){await installService(dir);ctx.ui.notify('Service release activated.','info');}
  else if(choice==='Restart service'){ctx.ui.notify('Restarting machine service…','info');await restartService(dir);ctx.ui.notify('Service restarted. Enabled sessions reconnect on their next poll.','info');}
- else if(choice?.startsWith('Stop/')&&await ctx.ui.confirm('Stop machine service?','All local sessions disconnect. Messages and identity remain stored.')){uninstallService(dir);ctx.ui.notify('Service stopped/uninstalled. Queues and identity retained.','info');}
+ else if(choice?.startsWith('Stop/')&&await ctx.ui.confirm('Stop machine service?','All local sessions disconnect. Messages and identity remain stored.')){await uninstallService(dir);ctx.ui.notify('Service stopped/uninstalled. Queues and identity retained.','info');}
 }
